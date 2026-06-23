@@ -1,0 +1,73 @@
+#musical-overlay {
+  position: fixed;
+  left: 50%;
+  bottom: 64px;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+  max-width: 80vw;
+  text-align: center;
+  pointer-events: none;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  display: none;
+}
+
+.musical-line {
+  color: #fff;
+  line-height: 1.25;
+  text-shadow: 0 0 4px #000, 0 2px 6px rgba(0, 0, 0, 0.9);
+}
+
+.musical-direct {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.musical-romantic {
+  font-size: 15px;
+  font-style: italic;
+  margin-top: 2px;
+  color: #ffe9a8;
+  opacity: 0.94;
+}
+
+#musical-trigger {
+  position: fixed;
+  right: 16px;
+  bottom: 210px;
+  z-index: 2147483647;
+  background: #ff0033;
+  color: #fff;
+  border: none;
+  border-radius: 18px;
+  padding: 8px 14px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+#musical-trigger:hover {
+  filter: brightness(1.12);
+}
+
+#musical-trigger:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+#musical-status {
+  position: fixed;
+  right: 16px;
+  bottom: 184px;
+  z-index: 2147483647;
+  font-size: 12px;
+  color: #fff;
+  background: rgba(0, 0, 0, 0.72);
+  padding: 4px 8px;
+  border-radius: 8px;
+  max-width: 240px;
+}
+
+#musical-status.musical-error {
+  background: rgba(180, 0, 0, 0.88);
+}
