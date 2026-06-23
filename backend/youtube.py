@@ -16,9 +16,16 @@ def extract_video_id(url):
 def get_metadata(url):
     import yt_dlp
 
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    vid = extract_video_id(url)
+    target = f"https://www.youtube.com/watch?v={vid}" if vid else url
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "skip_download": True,
+        "noplaylist": True,
+    }
     with yt_dlp.YoutubeDL(opts) as ydl:
-        info = ydl.extract_info(url, download=False)
+        info = ydl.extract_info(target, download=False)
     return {
         "videoId": info.get("id"),
         "title": info.get("title"),
