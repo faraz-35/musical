@@ -8,6 +8,9 @@
     "https://*.youtube.com/*",
     "http://localhost:8000/*"
   ],
+  "background": {
+    "scripts": ["background.js"]
+  },
   "content_scripts": [
     {
       "matches": ["*://*.youtube.com/*"],

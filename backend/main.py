@@ -1,7 +1,9 @@
+from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import traceback
 
 import cache
 import lyrics
@@ -10,6 +12,8 @@ import youtube
 
 load_dotenv()
 cache.init()
+
+LOG_PATH = Path(__file__).parent / "musical.log"
 
 app = FastAPI(title="musical")
 app.add_middleware(
@@ -88,24 +92,32 @@ def process(req: ProcessRequest):
     if cached:
         return cached
 
-    meta = youtube.get_metadata(req.url)
-    meta["videoId"] = video_id
+    try:
+        meta = youtube.get_metadata(req.url)
+        meta["videoId"] = video_id
 
-    lrc = lyrics.search_synced(
-        meta.get("artist"), meta.get("track"), meta.get("title") or ""
-    )
-
-    if not lrc:
-        import transcribe
-
-        try:
-            transcribe.transcribe(req.url)
-        except NotImplementedError as e:
-            raise HTTPException(status_code=404, detail=str(e))
-        raise HTTPException(
-            status_code=500, detail="Transcription path is not wired yet (Slice 2)."
+        lrc = lyrics.search_synced(
+            meta.get("artist"), meta.get("track"), meta.get("title") or ""
         )
 
-    record = build_record(meta, lrc)
+        if not lrc:
+            import transcribe
+
+            try:
+                transcribe.transcribe(req.url)
+            except NotImplementedError as e:
+                raise HTTPException(status_code=404, detail=str(e))
+            raise HTTPException(
+                status_code=500, detail="Transcription path is not wired yet (Slice 2)."
+            )
+
+        record = build_record(meta, lrc)
+    except HTTPException:
+        raise
+    except Exception as e:
+        with open(LOG_PATH, "a") as f:
+            f.write(traceback.format_exc() + "\n")
+        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
+
     cache.put(record)
     return record

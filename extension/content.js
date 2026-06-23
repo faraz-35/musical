@@ -1,7 +1,6 @@
 (function () {
   "use strict";
   const api = typeof browser !== "undefined" ? browser : chrome;
-  const BACKEND = "http://localhost:8000";
 
   let currentRecord = null;
   let currentLineIdx = -1;
@@ -116,7 +115,22 @@
     }
   }
 
-  async function onTrigger() {
+  function sendWithRetry(msg, attempts) {
+    return api.runtime.sendMessage(msg).then(
+      (resp) => resp,
+      (err) => {
+        const reason = (err && err.message) ? err.message : String(err);
+        if (attempts > 1 && /receiv|establish|connection/i.test(reason)) {
+          return new Promise((res) => setTimeout(res, 700)).then(
+            () => sendWithRetry(msg, attempts - 1)
+          );
+        }
+        throw err;
+      }
+    );
+  }
+
+  function onTrigger() {
     const id = getVideoId();
     if (!id) {
       showStatus("Open a YouTube watch page first.", true);
@@ -124,28 +138,28 @@
     }
     btnEl.disabled = true;
     showStatus("Generating… (metadata + lyrics + translation)");
-    try {
-      const resp = await fetch(BACKEND + "/process", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url: location.href }),
-      });
-      if (!resp.ok) {
-        const err = await resp.json().catch(() => ({}));
-        throw new Error(err.detail || "HTTP " + resp.status);
+    sendWithRetry({ type: "process", url: location.href }, 3).then(
+      (resp) => {
+        btnEl.disabled = false;
+        if (!resp || !resp.ok) {
+          showStatus("Error: " + (resp ? resp.error : "no response from background"), true);
+          return;
+        }
+        const rec = resp.rec;
+        api.storage.local.set({ ["musical:" + id]: rec }).then(() => {
+          currentRecord = rec;
+          currentLineIdx = -1;
+          btnEl.textContent = "🎵 musical ✓";
+          attachVideo();
+          showStatus("Done ✓");
+        });
+      },
+      (err) => {
+        btnEl.disabled = false;
+        const reason = (err && err.message) ? err.message : String(err);
+        showStatus("Error: send failed — " + reason, true);
       }
-      const rec = await resp.json();
-      await api.storage.local.set({ ["musical:" + id]: rec });
-      currentRecord = rec;
-      currentLineIdx = -1;
-      btnEl.textContent = "🎵 musical ✓";
-      attachVideo();
-      showStatus("Done ✓");
-    } catch (e) {
-      showStatus("Error: " + e.message, true);
-    } finally {
-      btnEl.disabled = false;
-    }
+    );
   }
 
   window.addEventListener("yt-navigate-finish", onNavigate);
