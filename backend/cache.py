@@ -4,6 +4,11 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).parent / "musical.db"
 
+# Bump when the cached record shape changes incompatibly. On init, any cache
+# written under an older schema is wiped so the extension never renders stale
+# fields (e.g. the removed `translation_romantic`) alongside the new ones.
+CACHE_VERSION = 2
+
 
 def _conn():
     conn = sqlite3.connect(DB_PATH)
@@ -26,6 +31,24 @@ def init():
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS meta (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+            """
+        )
+        row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'cache_version'"
+        ).fetchone()
+        if not row or int(row["value"]) < CACHE_VERSION:
+            conn.execute("DELETE FROM subtitles")
+            conn.execute(
+                "INSERT INTO meta(key, value) VALUES('cache_version', ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (str(CACHE_VERSION),),
+            )
 
 
 def get(video_id):

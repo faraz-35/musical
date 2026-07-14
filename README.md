@@ -33,7 +33,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 cp .env.example .env          # then put your real key in .env
 echo "ZAI_API_KEY=sk-..." > .env
-.venv/bin/uvicorn main:app --port 8000
+.venv/bin/uvicorn main:app --port 8765
 ```
 
 Requires `ffmpeg` on PATH (for the Slice 2 transcription path). Tested on macOS / Python 3.13.

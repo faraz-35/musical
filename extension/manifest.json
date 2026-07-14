@@ -6,7 +6,7 @@
   "permissions": ["storage"],
   "host_permissions": [
     "https://*.youtube.com/*",
-    "http://localhost:8000/*"
+    "http://localhost:8765/*"
   ],
   "background": {
     "scripts": ["background.js"]

@@ -1,5 +1,5 @@
 const api = typeof browser !== "undefined" ? browser : chrome;
-const BACKEND = "http://localhost:8000";
+const BACKEND = "http://localhost:8765";
 
 console.log("[musical] background script loaded");
 

@@ -1,15 +1,15 @@
 # AGENTS.md
 
 Guidance for AI agents working on **musical** — a local tool that adds
-custom romanticized English subtitles to YouTube songs (Persian / Arabic /
+sing-along English subtitles to YouTube songs (Persian / Arabic /
 French / etc.).
 
 ## What it is
 
 A Python backend pre-processes a song once (fetches synced lyrics, translates
-them via Z.ai **GLM-4.6** into a direct + a poetic English translation), caches
-the result, and a Firefox extension overlays the two timed lines on the YouTube
-player. Process-once, replay-forever.
+them via Z.ai **GLM-4.6** into a romanized line + a direct translation + a
+plain-English meaning), caches the result, and a Firefox extension overlays the
+three timed lines on the YouTube player. Process-once, replay-forever.
 
 ## Architecture
 
@@ -17,16 +17,17 @@ player. Process-once, replay-forever.
 backend/    FastAPI service (Python 3.13, venv at backend/.venv)
   youtube.py     yt-dlp metadata extraction (single video only)
   lyrics.py      syncedlyrics LRC lookup + LRC parser
-  translate.py   GLM-4.6 batched translation (direct + romanticized)
+  translate.py   GLM-4.6 batched translation (romanized + direct + meaning)
   cache.py       SQLite cache keyed by videoId
   main.py        FastAPI app: /health, /process, /subtitles/{videoId}
   transcribe.py  Whisper fallback (Slice 2 — currently a NotImplementedError stub)
 
 extension/  Firefox MV3
   manifest.json  content script + background script
-  content.js     overlay rendering + trigger button, syncs to <video> timeupdate
+  content.js     overlay rendering + trigger button, syncs to <video> timeupdate;
+                 per-video timing-offset editor (manual nudge)
   background.js  performs the backend fetch (NOT the content script — see gotchas)
-  overlay.css    subtitle styling
+  overlay.css    subtitle + sync-panel styling
 ```
 
 Pipeline: `YouTube URL → yt-dlp metadata → syncedlyrics LRC → GLM-4.6 translation → SQLite cache → extension overlay`.
@@ -39,7 +40,7 @@ All backend commands run from `backend/` with the venv:
 cd backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-.venv/bin/uvicorn main:app --port 8000          # run the server
+.venv/bin/uvicorn main:app --port 8765          # run the server
 ```
 
 Load the extension: Firefox → `about:debugging#/runtime/this-firefox` →
@@ -63,7 +64,7 @@ p=lyrics.parse_lrc(lyrics.search_synced(m.get('artist'),m.get('track'),m.get('ti
 print(len(p), 'lines')"
 
 # 4. live HTTP path + populates cache
-curl -s -X POST http://localhost:8000/process -H 'Content-Type: application/json' -d '{"url":"https://www.youtube.com/watch?v=<ID>"}'
+curl -s -X POST http://localhost:8765/process -H 'Content-Type: application/json' -d '{"url":"https://www.youtube.com/watch?v=<ID>"}'
 ```
 
 Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitignored).
@@ -72,18 +73,37 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
 
 - **Translation model is GLM-4.6 only.** Do NOT fall back to the free Flash
   models — the user explicitly wants GLM-4.6 quality.
-- **Two subtitle fields**, both shown on screen: `translation_direct`
-  (literal) and `translation_romantic` (poetic). The "meaning note" field is
-  deferred — don't add it without asking.
+- **Three subtitle fields**, all shown on screen: `romanized` (phonetic
+  sing-along guide, `null` when the original is English), `translation_direct`
+  (literal), and `meaning` (plain-English paraphrase that strips metaphor,
+  idiom and cultural references down to the underlying sentiment). There is no
+  separate "poetic / romantic" line — `meaning` replaces that role.
+- **Romanization is phonetic, sing-along-friendly** in the Latin alphabet,
+  aimed at an English speaker. It is NOT a transliteration-only step: Latin-script
+  non-English languages (French, Spanish, …) are romanized for pronunciation too
+  (e.g. "Je t'aime" → "zhuh tem"). Only English lines skip it (`romanized: null`).
 - **Explicit trigger only**: the extension generates subtitles when the user
   clicks the 🎵 button. Do not add auto-processing on page load.
 - **Local-only**: no cloud mirror. Cache lives in SQLite (backend) +
   `browser.storage.local` (extension).
+- **Subtitle timing offset** (extension-only): synced lyrics are often globally
+  early/late relative to the YouTube audio. Users nudge a per-video offset via
+  the ⚙ sync panel (manual ±0.1/±0.5s buttons). It is applied **non-destructively**
+  at render time (`line.start + offset` in `onTimeUpdate`); the original LRC
+  timestamps in the record are never modified. The offset is persisted under a
+  **separate** key, `musical:sync:<videoId>` (a bare number), so it survives
+  re-processing (which overwrites the subtitle record) and cache version wipes.
+  Not synced to the backend.
+- **Cache schema is versioned.** `cache.CACHE_VERSION` is bumped whenever the
+  record shape changes; `cache.init()` wipes rows written under an older
+  version. Extension-side `browser.storage.local` is not versioned — old
+  records there simply won't render the new fields, so the user should click
+  🎵 again after a schema change.
 - Cache record shape (shared contract between backend and extension):
   ```json
   { "videoId": "...", "title": "...", "artist": "...", "lang": null, "source": "lrc",
     "lines": [ { "start": 12.5, "end": 16.0, "original": "...",
-                 "translation_direct": "...", "translation_romantic": "..." } ] }
+                 "romanized": "...", "translation_direct": "...", "meaning": "..." } ] }
   ```
 
 ## Critical gotchas (do not regress on these)
@@ -110,4 +130,5 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   cache, Firefox overlay.
 - Slice 2 (pending): `transcribe.py` — `faster-whisper` fallback when no synced
   lyrics exist.
-- Later: meaning-note toggle, styling polish, per-language translation prompts.
+- Later: styling polish, per-language translation prompts, a toggle to hide
+  the romanized or meaning lines.

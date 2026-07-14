@@ -17,17 +17,28 @@
   text-shadow: 0 0 4px #000, 0 2px 6px rgba(0, 0, 0, 0.9);
 }
 
+/* sing-along pronunciation guide (Latin-script original line) */
+.musical-romanized {
+  font-size: 15px;
+  font-style: italic;
+  color: #ffe9a8;
+  opacity: 0.94;
+}
+
+/* literal translation — the prominent line */
 .musical-direct {
   font-size: 18px;
   font-weight: 600;
+  margin-top: 2px;
 }
 
-.musical-romantic {
-  font-size: 15px;
+/* plain-English meaning / paraphrase */
+.musical-meaning {
+  font-size: 14px;
   font-style: italic;
   margin-top: 2px;
-  color: #ffe9a8;
-  opacity: 0.94;
+  color: #cfe3ff;
+  opacity: 0.88;
 }
 
 #musical-trigger {
@@ -38,12 +49,19 @@
   background: #ff0033;
   color: #fff;
   border: none;
-  border-radius: 18px;
-  padding: 8px 14px;
-  font-size: 13px;
-  font-weight: 600;
+  border-radius: 50%;
+  width: 40px;
+  height: 40px;
+  font-size: 18px;
+  line-height: 1;
   cursor: pointer;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+  transition: background 0.15s ease;
+}
+
+/* green when subtitles are cached for this video */
+#musical-trigger.musical-ready {
+  background: #1f9d55;
 }
 
 #musical-trigger:hover {
@@ -53,6 +71,83 @@
 #musical-trigger:disabled {
   opacity: 0.6;
   cursor: wait;
+}
+
+#musical-sync-btn {
+  position: fixed;
+  right: 16px;
+  bottom: 178px;
+  z-index: 2147483647;
+  background: #2b2b2b;
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 18px;
+  padding: 6px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
+}
+
+#musical-sync-btn:hover {
+  filter: brightness(1.2);
+}
+
+#musical-sync-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 96px;
+  z-index: 2147483647;
+  background: rgba(0, 0, 0, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 12px;
+  padding: 10px;
+  font-family: -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: #fff;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.55);
+}
+
+#musical-sync-value {
+  font-size: 20px;
+  font-weight: 700;
+  text-align: center;
+  color: #bbb;
+  margin-bottom: 8px;
+}
+
+#musical-sync-value.musical-pos {
+  color: #7ee29b;
+}
+
+#musical-sync-value.musical-neg {
+  color: #ff9a9a;
+}
+
+.musical-nudge-row {
+  display: flex;
+  gap: 6px;
+}
+
+.musical-sync-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.musical-nudge {
+  flex: 1;
+  background: #3a3a3a;
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 7px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.musical-nudge:hover {
+  background: #4d4d4d;
 }
 
 #musical-status {

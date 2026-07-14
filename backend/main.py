@@ -1,9 +1,7 @@
-from pathlib import Path
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import traceback
 
 import cache
 import lyrics
@@ -12,8 +10,6 @@ import youtube
 
 load_dotenv()
 cache.init()
-
-LOG_PATH = Path(__file__).parent / "musical.log"
 
 app = FastAPI(title="musical")
 app.add_middleware(
@@ -43,14 +39,15 @@ def build_record(meta, lrc_text):
     lines = []
     for idx, p in enumerate(parsed):
         end = parsed[idx + 1]["start"] if idx + 1 < n else p["start"] + DEFAULT_LINE_GAP
-        t = translations.get(idx, {"direct": "", "romantic": ""})
+        t = translations.get(idx, {"romanized": None, "direct": "", "meaning": ""})
         lines.append(
             {
                 "start": round(p["start"], 3),
                 "end": round(end, 3),
                 "original": p["text"],
+                "romanized": t["romanized"],
                 "translation_direct": t["direct"],
-                "translation_romantic": t["romantic"],
+                "meaning": t["meaning"],
             }
         )
 
@@ -92,32 +89,24 @@ def process(req: ProcessRequest):
     if cached:
         return cached
 
-    try:
-        meta = youtube.get_metadata(req.url)
-        meta["videoId"] = video_id
+    meta = youtube.get_metadata(req.url)
+    meta["videoId"] = video_id
 
-        lrc = lyrics.search_synced(
-            meta.get("artist"), meta.get("track"), meta.get("title") or ""
+    lrc = lyrics.search_synced(
+        meta.get("artist"), meta.get("track"), meta.get("title") or ""
+    )
+
+    if not lrc:
+        import transcribe
+
+        try:
+            transcribe.transcribe(req.url)
+        except NotImplementedError as e:
+            raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(
+            status_code=500, detail="Transcription path is not wired yet (Slice 2)."
         )
 
-        if not lrc:
-            import transcribe
-
-            try:
-                transcribe.transcribe(req.url)
-            except NotImplementedError as e:
-                raise HTTPException(status_code=404, detail=str(e))
-            raise HTTPException(
-                status_code=500, detail="Transcription path is not wired yet (Slice 2)."
-            )
-
-        record = build_record(meta, lrc)
-    except HTTPException:
-        raise
-    except Exception as e:
-        with open(LOG_PATH, "a") as f:
-            f.write(traceback.format_exc() + "\n")
-        raise HTTPException(status_code=500, detail=f"{type(e).__name__}: {e}")
-
+    record = build_record(meta, lrc)
     cache.put(record)
     return record

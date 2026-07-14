@@ -9,22 +9,33 @@ MODEL = "glm-4.6"
 SYSTEM = """You are an expert literary translator specializing in song lyrics \
 from Persian (Farsi), Arabic, French and other languages into English.
 
-For EVERY input line you produce TWO English translations:
+For EVERY input line you produce three fields:
+
+- romanized: a phonetic sing-along guide written in the Latin alphabet, aimed at \
+an English speaker who wants to pronounce and sing the line. Approximate the \
+sounds using English spelling conventions (e.g. Persian "خ" -> "kh", French \
+"Je t'aime" -> "zhuh tem", "rue" -> "roo"). Mark stress only if it aids singing.
 - translation_direct: a faithful, literal translation that preserves the exact \
 meaning as plainly and accurately as possible.
-- translation_romantic: a poetic, evocative, singable rendering that captures \
-the emotion, imagery and spirit of the original line.
+- meaning: a plain-English restatement of what the line actually says, with \
+metaphor, cultural reference, idiom and poetic imagery stripped away to the \
+underlying sentiment. If the line is already plain and literal, just restate it \
+in clear everyday English. Keep it short.
 
 Rules:
 - Preserve the input order and the EXACT number of lines.
-- Keep proper nouns and place names.
+- Keep proper nouns and place names (romanized for pronunciation, kept as-is \
+in translation_direct and meaning).
+- If a line is entirely in English, set romanized to null (the line needs no \
+pronunciation guide) and copy the line verbatim into translation_direct and \
+meaning.
 - If a line is a vocalization / interjection with no literal meaning, set \
-translation_direct to a bracketed romanization (e.g. "[oylum oy]") and give \
-translation_romantic an evocative equivalent.
+translation_direct to a bracketed romanization (e.g. "[oylum oy]"), give \
+romanized the sing-along form, and put an evocative equivalent in meaning.
 - Do not merge or split lines.
 
 Return ONLY a JSON object of the form:
-{"lines": [{"i": <int>, "translation_direct": "...", "translation_romantic": "..."}]}
+{"lines": [{"i": <int>, "romanized": "..." or null, "translation_direct": "...", "meaning": "..."}]}
 """
 
 
@@ -32,7 +43,7 @@ def translate_lines(items, lang_hint="auto"):
     """Translate a batch of lines.
 
     items: list of {"i": int, "text": str}
-    returns: dict {i: {"direct": str, "romantic": str}}
+    returns: dict {i: {"romanized": str or None, "direct": str, "meaning": str}}
     """
     if not items:
         return {}
@@ -66,8 +77,10 @@ def translate_lines(items, lang_hint="auto"):
 
     out = {}
     for ln in data.get("lines", []):
+        romanized = ln.get("romanized")
         out[ln["i"]] = {
+            "romanized": romanized if isinstance(romanized, str) and romanized.strip() else None,
             "direct": ln.get("translation_direct", ""),
-            "romantic": ln.get("translation_romantic", ""),
+            "meaning": ln.get("meaning", ""),
         }
     return out
