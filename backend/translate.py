@@ -6,6 +6,16 @@ import requests
 ZAI_URL = "https://api.z.ai/api/paas/v4/chat/completions"
 MODEL = "glm-4.6"
 
+# Hard ceiling on the total input size sent to the LLM in one request, in
+# characters. A normal song sits well under this; exceeding it almost always
+# means a garbage/wrong LRC rather than a real song. We refuse rather than
+# risk a large, accidental API spend.
+MAX_INPUT_CHARS = 20_000
+
+
+class InputTooLarge(ValueError):
+    """Raised when the lyrics input exceeds MAX_INPUT_CHARS."""
+
 SYSTEM = """You are an expert literary translator specializing in song lyrics \
 from Persian (Farsi), Arabic, French and other languages into English.
 
@@ -47,6 +57,14 @@ def translate_lines(items, lang_hint="auto"):
     """
     if not items:
         return {}
+
+    total_chars = sum(len(it.get("text", "")) for it in items)
+    if total_chars > MAX_INPUT_CHARS:
+        raise InputTooLarge(
+            f"Lyrics input too large ({total_chars} chars > {MAX_INPUT_CHARS}); "
+            "refusing to send to LLM."
+        )
+
     key = os.environ.get("ZAI_API_KEY")
     if not key:
         raise RuntimeError("ZAI_API_KEY is not set.")

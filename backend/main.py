@@ -107,6 +107,9 @@ def process(req: ProcessRequest):
             status_code=500, detail="Transcription path is not wired yet (Slice 2)."
         )
 
-    record = build_record(meta, lrc)
+    try:
+        record = build_record(meta, lrc)
+    except translate.InputTooLarge as e:
+        raise HTTPException(status_code=413, detail=str(e))
     cache.put(record)
     return record
