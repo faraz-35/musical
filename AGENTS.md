@@ -19,18 +19,22 @@ backend/    FastAPI service (Python 3.13, venv at backend/.venv)
   lyrics.py      syncedlyrics LRC lookup + LRC parser
   translate.py   GLM-4.6 batched translation (romanized + direct + meaning)
   cache.py       SQLite cache keyed by videoId
-  main.py        FastAPI app: /health, /process, /subtitles/{videoId}
-  transcribe.py  Whisper fallback (Slice 2 — currently a NotImplementedError stub)
+  main.py        FastAPI app: /health, /process, /subtitles/{videoId}, /resync
+  transcribe.py  Groq Whisper transcription: download_audio + transcribe (word-level)
+  align.py       forced alignment of known lyric lines to Whisper word timestamps
 
 extension/  Firefox MV3
   manifest.json  content script + background script
   content.js     overlay rendering + trigger button, syncs to <video> timeupdate;
-                 per-video timing-offset editor (manual nudge)
+                 per-line timing editor (global + per-line nudge);
+                 "Re-sync from audio" button (re-transcribes via Groq)
   background.js  performs the backend fetch (NOT the content script — see gotchas)
   overlay.css    subtitle + sync-panel styling
 ```
 
 Pipeline: `YouTube URL → yt-dlp metadata → syncedlyrics LRC → GLM-4.6 translation → SQLite cache → extension overlay`.
+
+When synced lyrics are missing (Slice 2 fallback): `YouTube URL → yt-dlp metadata → Groq Whisper transcription (word-level) → line grouping on pauses → GLM-4.6 translation → SQLite cache`.
 
 ## Commands
 
@@ -86,22 +90,47 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   clicks the 🎵 button. Do not add auto-processing on page load.
 - **Local-only**: no cloud mirror. Cache lives in SQLite (backend) +
   `browser.storage.local` (extension).
-- **Subtitle timing offset** (extension-only): synced lyrics are often globally
-  early/late relative to the YouTube audio. Users nudge a per-video offset via
-  the ⚙ sync panel (manual ±0.1/±0.5s buttons). It is applied **non-destructively**
-  at render time (`line.start + offset` in `onTimeUpdate`); the original LRC
-  timestamps in the record are never modified. The offset is persisted under a
-  **separate** key, `musical:sync:<videoId>` (a bare number), so it survives
+- **Transcription is timing-only, never trusted text.** When no synced LRC
+  exists (Slice 2 fallback), Groq Whisper provides both the lyric text and the
+  timing. But for the **re-sync** path (`/resync`), Whisper is used ONLY for
+  timing — the trusted LRC text and GLM translations are preserved, and
+  `align.py` re-pins their `start`/`end` to fresh word timestamps. This matters
+  because Whisper transcribes sung Persian/Arabic poorly and often emits
+  "موسیقی" (music) placeholders for instrumentals; we never want that text.
+- **Forced alignment carries drift forward.** `align.align_lines` takes the
+  existing per-line start times as *hints* but tracks a running offset: when a
+  line is confidently matched, its `matched_start - hint` is smoothed into a
+  drift estimate that shifts the next line's search window. This lets it track
+  whole-song shifts (e.g. a live recording lagging the studio LRC by ~80s)
+  while tolerating per-line wobble and skipping intro narration / instrumental
+  breaks. Scoring rewards token coverage (prefix-tolerant for Whisper's phonetic
+  near-misses) and penalizes window length, with a coverage threshold that
+  guards against matching noise.
+- **Subtitle timing** (extension-only): synced lyrics are often out of step
+  with the YouTube audio. The ⚙ sync panel exposes both a **global offset**
+  (shifts every line) and **per-line start/end nudging** (fixes drift or a
+  mistimed line). All edits are **non-destructive** — original LRC timestamps
+  in the record are never modified; the render path computes effective time as
+  `original + global + perLineDelta` (see `effectiveStart`/`effectiveEnd` in
+  `content.js`). Persisted under a **separate** key, `musical:sync:<videoId>`,
+  as an object `{ global: <number>, lines: [{ s, e }, ...] }`, so it survives
   re-processing (which overwrites the subtitle record) and cache version wipes.
-  Not synced to the backend.
+  The loader (`normalizeSyncData`) migrates the legacy bare-number format
+  (treated as `global`) and pads `lines` to match the record. Not synced to the
+  backend. **Re-sync from audio clears these deltas** — since it rebuilds base
+  timings from the audio, old manual offsets are meaningless.
 - **Cache schema is versioned.** `cache.CACHE_VERSION` is bumped whenever the
-  record shape changes; `cache.init()` wipes rows written under an older
-  version. Extension-side `browser.storage.local` is not versioned — old
-  records there simply won't render the new fields, so the user should click
-  🎵 again after a schema change.
+  record shape changes; `cache.init()` DROPs and recreates the table under an
+  older version (a plain `DELETE` left stale column sets in place, so new
+  columns like `url` never appeared). Extension-side `browser.storage.local`
+  is not versioned — old records there simply won't render the new fields, so
+  the user should click 🎵 again after a schema change.
+- **The record stores its source `url`** so `/resync` can re-download the audio
+  without the extension re-sending it.
 - Cache record shape (shared contract between backend and extension):
   ```json
-  { "videoId": "...", "title": "...", "artist": "...", "lang": null, "source": "lrc",
+  { "videoId": "...", "title": "...", "artist": "...", "lang": null,
+    "source": "lrc" | "transcription", "url": "https://www.youtube.com/watch?v=...",
     "lines": [ { "start": 12.5, "end": 16.0, "original": "...",
                  "romanized": "...", "translation_direct": "...", "meaning": "..." } ] }
   ```
@@ -123,12 +152,26 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
 4. **RTL / non-Latin lyrics.** syncedlyrics coverage is strong for French /
    Western and spottier for Persian / Arabic — those misses are what Slice 2
   (Whisper) is meant to cover.
+5. **Audio download must use a fresh temp path + `%(id)s.%(ext)s`.** Pre-creating
+   a temp file makes yt-dlp skip it ("already downloaded"), and forcing an
+   `.m4a` extension clashes when it selects an opus/webm format. Use a temp
+   *directory* with the `%(id)s.%(ext)s` template (see `transcribe.download_audio`).
+6. **YouTube rate-limits rapid re-downloads** with transient 403s. A single
+   download per song is fine; back-to-back test runs against the same video may
+   fail. `transcribe.transcribe` cleans up its temp dir on any path (success or
+   failure).
+7. **Whisper labels sung audio as "موسیقی" (music).** Whisper-large-v3 is a
+   speech model: it treats vocals-with-instrumentation as non-speech and emits
+   "music"/"موسیقی" placeholders instead of transcribing. This is why the
+  re-sync path uses transcription for TIMING ONLY and never trusts its text
+  (see `align.py`).
 
 ## Status
 
 - Slice 1 (done): metadata, synced-lyrics lookup, GLM-4.6 translation, SQLite
   cache, Firefox overlay.
-- Slice 2 (pending): `transcribe.py` — `faster-whisper` fallback when no synced
-  lyrics exist.
+- Slice 2 (done): `transcribe.py` — Groq Whisper transcription fallback when no
+  synced lyrics exist, plus `align.py` forced alignment + `/resync` endpoint
+  for the "Re-sync from audio" button.
 - Later: styling polish, per-language translation prompts, a toggle to hide
   the romanized or meaning lines.

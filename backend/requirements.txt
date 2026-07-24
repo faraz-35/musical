@@ -4,4 +4,3 @@ yt-dlp>=2024.0.0
 syncedlyrics>=0.7
 requests>=2.31
 python-dotenv>=1.0
-faster-whisper>=1.0

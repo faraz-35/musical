@@ -3,8 +3,10 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+import align
 import cache
 import lyrics
+import transcribe
 import translate
 import youtube
 
@@ -25,6 +27,10 @@ DEFAULT_LINE_GAP = 4.0
 
 class ProcessRequest(BaseModel):
     url: str
+
+
+class ResyncRequest(BaseModel):
+    videoId: str
 
 
 def build_record(meta, lrc_text):
@@ -57,6 +63,70 @@ def build_record(meta, lrc_text):
         "artist": meta.get("artist"),
         "lang": None,
         "source": "lrc",
+        "url": meta.get("url"),
+        "lines": lines,
+    }
+
+
+def build_record_from_transcription(meta):
+    """Slice 2 path: no synced lyrics, so the audio itself provides both the
+    lyric text and the per-line timing via Groq Whisper.
+
+    Word-level timestamps from Whisper are grouped into lines on pauses: a gap
+    of >= SPLIT_GAP seconds between words ends a line. The grouped text is then
+    translated by GLM-4.6 like any other lyric.
+    """
+    SPLIT_GAP = 1.5
+    words = transcribe.transcribe(meta["url"])
+
+    # Group words into lines on inter-word gaps.
+    line_texts = []
+    cur = []
+    last_end = None
+    for w in words:
+        if last_end is not None and w["start"] - last_end >= SPLIT_GAP and cur:
+            line_texts.append(" ".join(cur))
+            cur = []
+        cur.append(w["text"])
+        last_end = w["end"]
+    if cur:
+        line_texts.append(" ".join(cur))
+
+    if not line_texts:
+        raise HTTPException(
+            status_code=422, detail="Transcription produced no usable lines."
+        )
+
+    items = [{"i": idx, "text": t} for idx, t in enumerate(line_texts)]
+    translations = translate.translate_lines(items)
+
+    n = len(words)
+    lines = []
+    wi = 0  # running index into the flat word list
+    for idx, text in enumerate(line_texts):
+        tokens = text.split()
+        start = words[wi]["start"]
+        end = words[min(wi + len(tokens) - 1, n - 1)]["end"]
+        wi += len(tokens)
+        t = translations.get(idx, {"romanized": None, "direct": "", "meaning": ""})
+        lines.append(
+            {
+                "start": round(start, 3),
+                "end": round(end, 3),
+                "original": text,
+                "romanized": t["romanized"],
+                "translation_direct": t["direct"],
+                "meaning": t["meaning"],
+            }
+        )
+
+    return {
+        "videoId": meta["videoId"],
+        "title": meta.get("title"),
+        "artist": meta.get("artist"),
+        "lang": None,
+        "source": "transcription",
+        "url": meta.get("url"),
         "lines": lines,
     }
 
@@ -89,27 +159,62 @@ def process(req: ProcessRequest):
     if cached:
         return cached
 
-    meta = youtube.get_metadata(req.url)
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    meta = youtube.get_metadata(url)
     meta["videoId"] = video_id
+    meta["url"] = url
 
     lrc = lyrics.search_synced(
         meta.get("artist"), meta.get("track"), meta.get("title") or ""
     )
 
-    if not lrc:
-        import transcribe
-
+    record = None
+    if lrc:
         try:
-            transcribe.transcribe(req.url)
-        except NotImplementedError as e:
-            raise HTTPException(status_code=404, detail=str(e))
-        raise HTTPException(
-            status_code=500, detail="Transcription path is not wired yet (Slice 2)."
-        )
+            record = build_record(meta, lrc)
+        except translate.InputTooLarge as e:
+            raise HTTPException(status_code=413, detail=str(e))
 
-    try:
-        record = build_record(meta, lrc)
-    except translate.InputTooLarge as e:
-        raise HTTPException(status_code=413, detail=str(e))
+    if record is None:
+        # Slice 2 fallback: no synced lyrics — transcribe the audio.
+        try:
+            record = build_record_from_transcription(meta)
+        except transcribe.TranscriptionError as e:
+            raise HTTPException(status_code=502, detail=str(e))
+
     cache.put(record)
     return record
+
+
+@app.post("/resync")
+def resync(req: ResyncRequest):
+    """Re-align a cached record's timing against the actual audio.
+
+    Used by the extension's "Re-sync from audio" button when synced-lyric
+    timestamps drift from the audio (common for live recordings). Re-transcribes
+    the source audio via Groq and aligns the existing lyric texts to the fresh
+    word timestamps, overwriting start/end while preserving the text and all
+    translations.
+    """
+    rec = cache.get(req.videoId)
+    if not rec:
+        raise HTTPException(
+            status_code=404,
+            detail="No cached subtitles for this video. POST /process first.",
+        )
+    url = rec.get("url") or f"https://www.youtube.com/watch?v={req.videoId}"
+    line_texts = [ln["original"] for ln in rec["lines"]]
+    hints = [ln["start"] for ln in rec["lines"]]
+
+    try:
+        words = transcribe.transcribe(url)
+    except transcribe.TranscriptionError as e:
+        raise HTTPException(status_code=502, detail=str(e))
+
+    spans = align.align_lines(line_texts, words, hints=hints)
+    for ln, span in zip(rec["lines"], spans):
+        ln["start"] = span["start"]
+        ln["end"] = span["end"]
+
+    cache.put(rec)
+    return rec

@@ -7,7 +7,8 @@ DB_PATH = Path(__file__).parent / "musical.db"
 # Bump when the cached record shape changes incompatibly. On init, any cache
 # written under an older schema is wiped so the extension never renders stale
 # fields (e.g. the removed `translation_romantic`) alongside the new ones.
-CACHE_VERSION = 2
+# v3: added `url` to the record so /resync can re-download the source audio.
+CACHE_VERSION = 3
 
 
 def _conn():
@@ -26,6 +27,7 @@ def init():
                 artist     TEXT,
                 lang       TEXT,
                 source     TEXT,
+                url        TEXT,
                 data_json  TEXT NOT NULL,
                 created_at TEXT DEFAULT (datetime('now'))
             )
@@ -43,7 +45,25 @@ def init():
             "SELECT value FROM meta WHERE key = 'cache_version'"
         ).fetchone()
         if not row or int(row["value"]) < CACHE_VERSION:
-            conn.execute("DELETE FROM subtitles")
+            # DROP + recreate rather than just DELETE rows: CREATE TABLE IF NOT
+            # EXISTS is a no-op once the table exists, so an old schema (missing
+            # new columns like `url`) would otherwise persist across a version
+            # bump. Dropping guarantees the current column set.
+            conn.execute("DROP TABLE IF EXISTS subtitles")
+            conn.execute(
+                """
+                CREATE TABLE subtitles (
+                    video_id   TEXT PRIMARY KEY,
+                    title      TEXT,
+                    artist     TEXT,
+                    lang       TEXT,
+                    source     TEXT,
+                    url        TEXT,
+                    data_json  TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                )
+                """
+            )
             conn.execute(
                 "INSERT INTO meta(key, value) VALUES('cache_version', ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -68,13 +88,14 @@ def put(record):
     with _conn() as conn:
         conn.execute(
             """
-            INSERT INTO subtitles (video_id, title, artist, lang, source, data_json)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO subtitles (video_id, title, artist, lang, source, url, data_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(video_id) DO UPDATE SET
                 title     = excluded.title,
                 artist    = excluded.artist,
                 lang      = excluded.lang,
                 source    = excluded.source,
+                url       = excluded.url,
                 data_json = excluded.data_json
             """,
             (
@@ -83,6 +104,7 @@ def put(record):
                 record.get("artist"),
                 record.get("lang"),
                 record.get("source"),
+                record.get("url"),
                 json.dumps(record["lines"], ensure_ascii=False),
             ),
         )
