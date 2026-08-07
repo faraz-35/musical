@@ -25,11 +25,11 @@ backend/    FastAPI service (Python 3.13, venv at backend/.venv)
 
 extension/  Firefox MV3
   manifest.json  content script + background script
-  content.js     overlay rendering + trigger button, syncs to <video> timeupdate;
-                 per-line timing editor (global + per-line nudge);
-                 "Re-sync from audio" button (re-transcribes via Groq)
+  content.js     overlay rendering; injects a native action-bar pill (🎵/⚙);
+                 syncs to <video> timeupdate; per-line timing editor (global +
+                 per-line nudge); "Re-sync from audio" button (Groq)
   background.js  performs the backend fetch (NOT the content script — see gotchas)
-  overlay.css    subtitle + sync-panel styling
+  overlay.css    subtitle + sync-panel styling; injected-pill state overrides
 ```
 
 Pipeline: `YouTube URL → yt-dlp metadata → syncedlyrics LRC → GLM-4.6 translation → SQLite cache → extension overlay`.
@@ -46,6 +46,33 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/uvicorn main:app --port 8765          # run the server
 ```
+
+### Backend auto-start (launchd)
+
+`com.faraz.musical.plist` (checked in at repo root) runs the backend as a
+**LaunchAgent** that starts at login and auto-restarts on crash/exit
+(`KeepAlive`). It is symlinked into `~/Library/LaunchAgents/`. So in normal use
+you do NOT need the uvicorn line above — the server is already up at
+`http://127.0.0.1:8765`. Verify with `curl http://127.0.0.1:8765/health`.
+
+```sh
+launchctl load   ~/Library/LaunchAgents/com.faraz.musical.plist   # install/start
+launchctl unload ~/Library/LaunchAgents/com.faraz.musical.plist   # stop + disable
+tail -f logs/launchd.out.log logs/launchd.err.log                 # launchd's own log
+```
+
+Notes:
+- It calls the venv uvicorn directly
+  (`backend/.venv/bin/uvicorn`) with `WorkingDirectory=backend/`, because
+  launchd starts processes with a near-empty PATH. `main:app` then resolves its
+  sibling modules, and `load_dotenv()` picks up `backend/.env`.
+- `PATH` is set explicitly to include `/opt/homebrew/bin`: yt-dlp (in
+  `youtube.py` + `transcribe.py`) shells out to `ffmpeg`/`ffprobe` there for
+  audio extraction.
+- The `ThrottleInterval` (10s) guards against a tight restart loop if the
+  server fails fast (e.g. port already taken). A manual
+  `.venv/bin/uvicorn ...` run still works, but launchd will fight you for the
+  port — unload first.
 
 Load the extension: Firefox → `about:debugging#/runtime/this-firefox` →
 "Load Temporary Add-on..." → select `extension/manifest.json`.
@@ -87,7 +114,16 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   non-English languages (French, Spanish, …) are romanized for pronunciation too
   (e.g. "Je t'aime" → "zhuh tem"). Only English lines skip it (`romanized: null`).
 - **Explicit trigger only**: the extension generates subtitles when the user
-  clicks the 🎵 button. Do not add auto-processing on page load.
+  clicks the musical pill in YouTube's action bar. Do not add auto-processing
+  on page load.
+- **The trigger is a native action-bar pill, not a floating button.**
+  `injectActionBarButton` clones a real sibling action button (the last child
+  of `#top-level-buttons-computed` / `#flexible-item-buttons`) and mutates its
+  glyph + label. One element, two states set by `updateActionBtn`: idle (🎵,
+  click → generate) and ready (⚙, click → open the sync panel). It cannot be
+  dragged — it lives wherever YouTube puts the action bar. The dense sync
+  panel stays a floating panel anchored top-right. The older floating/draggable
+  🎵 + ⚙ buttons were removed; do not re-add them.
 - **Local-only**: no cloud mirror. Cache lives in SQLite (backend) +
   `browser.storage.local` (extension).
 - **Transcription is timing-only, never trusted text.** When no synced LRC
@@ -97,6 +133,16 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   `align.py` re-pins their `start`/`end` to fresh word timestamps. This matters
   because Whisper transcribes sung Persian/Arabic poorly and often emits
   "موسیقی" (music) placeholders for instrumentals; we never want that text.
+- **`/resync` passes the lyric text as Whisper's `prompt`.** The cached lyrics
+  are often Latin-romanized (e.g. `Rabb manneya tainu`), but left to itself
+  Whisper transcribes Hindi/Punjabi audio in Devanagari/Gurmukhi (`रभ मन
+  साहिबा`). Since `align.py` matches tokens as strings, the two scripts score
+  **zero overlap** → zero confident anchors → interpolation has nothing to work
+  from → resync silently becomes a no-op that keeps the stale LRC hints.
+  Passing the trusted lyric text as Whisper's `prompt` steers the transcript
+  into the SAME script/lexicon as the lyrics, giving the aligner real anchors.
+  `main.py` passes `" ".join(line_texts)` (trimmed to 22 tokens inside
+  `transcribe.transcribe`, Groq's documented prompt cap).
 - **Forced alignment carries drift forward.** `align.align_lines` takes the
   existing per-line start times as *hints* but tracks a running offset: when a
   line is confidently matched, its `matched_start - hint` is smoothed into a
@@ -105,7 +151,22 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   while tolerating per-line wobble and skipping intro narration / instrumental
   breaks. Scoring rewards token coverage (prefix-tolerant for Whisper's phonetic
   near-misses) and penalizes window length, with a coverage threshold that
-  guards against matching noise.
+  guards against matching noise. The carried offset is **capped** (`OFFSET_MAX`)
+  so a single spurious match can't blow up the search window for the rest of the
+  song. The pipeline runs as **three passes** in `align_lines`:
+  1. `_score_window` — raw per-line match against the word stream (the pass
+     above). Unmatched lines fall back to the drift-adjusted hint.
+  2. `_interpolate` — lines that missed coverage are re-placed **proportionally
+     between the nearest surrounding confident matches (anchors)** instead of
+     replaying their stale LRC hint. This is what recovers a whole-song shift
+     for sung sections Whisper can't transcribe (it emits "موسیقی"/music
+     placeholders there); without it most lines would silently keep their old,
+     wrong timing and resync would look like a no-op.
+  3. `_enforce_monotonic` — forces every line's `start >= prev.end` and dedupes
+     exact-duplicate spans (a recurring chorus matched to the same words), so
+     the overlay never receives overlapping/backwards lines.
+  Never regress the monotonicity pass: an earlier bug shipped a record with 10
+  overlapping lines and a 32s backwards jump, which broke the on-screen overlay.
 - **Subtitle timing** (extension-only): synced lyrics are often out of step
   with the YouTube audio. The ⚙ sync panel exposes both a **global offset**
   (shifts every line) and **per-line start/end nudging** (fixes drift or a
@@ -165,6 +226,17 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
    "music"/"موسیقی" placeholders instead of transcribing. This is why the
   re-sync path uses transcription for TIMING ONLY and never trusts its text
   (see `align.py`).
+8. **Action-bar pill must CLONE a real button, never build one.** YouTube's
+   button look lives in build-specific, obfuscated BEM classes
+   (`yt-spec-button-shape-next--*`) that change between releases. Building a
+   `<button>` from scratch breaks on the next YouTube build. `injectActionBarButton`
+   clones the last child of the action bar (`#top-level-buttons-computed` →
+   `#flexible-item-buttons` → menu div fallback chain) and mutates its glyph +
+   aria-label. The bar is recreated on every `yt-navigate-finish`, so
+   `ensureActionBarButton` retries injection on a backoff. Stamp our injected
+   node with `data-musical` so we can find/avoid duplicating it. If the bar
+   ever fails to be found, the pill simply won't appear — the page otherwise
+   works. (This is the same technique Return YouTube Dislike uses.)
 
 ## Status
 

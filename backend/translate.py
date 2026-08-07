@@ -1,5 +1,6 @@
 import json
 import os
+import time
 
 import requests
 
@@ -11,6 +12,13 @@ MODEL = "glm-4.6"
 # means a garbage/wrong LRC rather than a real song. We refuse rather than
 # risk a large, accidental API spend.
 MAX_INPUT_CHARS = 20_000
+
+# GLM-4.6 can run long on big songs (it's a frontier model, not a fast one).
+# 300s headroom avoids the ReadTimeout we saw on long tracks; one retry on a
+# transient timeout/connection error covers Z.ai's occasional blips.
+ZAI_TIMEOUT_S = 300
+ZAI_MAX_ATTEMPTS = 2
+ZAI_RETRY_BACKOFF_S = 4
 
 
 class InputTooLarge(ValueError):
@@ -83,13 +91,36 @@ def translate_lines(items, lang_hint="auto"):
         "response_format": {"type": "json_object"},
         "temperature": 0.7,
     }
-    resp = requests.post(
-        ZAI_URL,
-        headers={"Authorization": f"Bearer {key}", "Content-Type": "application/json"},
-        json=payload,
-        timeout=180,
-    )
-    resp.raise_for_status()
+
+    # Retry transient transport errors (timeouts, connection resets). A 4xx from
+    # Z.ai is NOT retried — raise_for_status surfaces it immediately, since it's
+    # almost certainly a bad request / auth issue that won't fix itself.
+    last_err = None
+    for attempt in range(1, ZAI_MAX_ATTEMPTS + 1):
+        try:
+            resp = requests.post(
+                ZAI_URL,
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                json=payload,
+                timeout=ZAI_TIMEOUT_S,
+            )
+            resp.raise_for_status()
+            break
+        except (requests.Timeout, requests.ConnectionError) as e:
+            last_err = e
+            if attempt < ZAI_MAX_ATTEMPTS:
+                time.sleep(ZAI_RETRY_BACKOFF_S * attempt)
+                continue
+            raise
+    else:
+        # Loop exhausted without break: only reachable if a transient error
+        # recurred on every attempt. Re-raise the last one.
+        if last_err:
+            raise last_err
+
     content = resp.json()["choices"][0]["message"]["content"]
     data = json.loads(content)
 

@@ -4,4 +4,6 @@ __pycache__/
 *.pyc
 *.db
 *.log
+logs/
 .DS_Store
+.zcode/

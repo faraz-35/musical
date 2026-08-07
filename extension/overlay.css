@@ -64,58 +64,29 @@
   opacity: 0.88;
 }
 
-#musical-trigger {
-  position: fixed;
-  right: 16px;
-  bottom: 210px;
-  z-index: 2147483647;
-  background: #ff0033;
-  color: #fff;
-  border: none;
-  border-radius: 50%;
-  width: 40px;
-  height: 40px;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-  transition: background 0.15s ease;
+/* ---- native action-bar pill (injected, not floating) ----
+   We clone a real YouTube action button (see content.js injectActionBarButton),
+   so the base look is inherited from YouTube's own classes. We only override
+   our two custom states:
+     .musical-ready   — subtitles cached; nudge the icon to a brighter tone so
+                        the user sees it's active, WITHOUT a background box.
+     .musical-loading — backend generate in flight.
+   Selectors are scoped under our data-musical marker so they never leak onto
+   real YouTube buttons. */
+
+[data-musical="musical-action-btn"].musical-ready .yt-spec-button-shape-next__icon {
+  filter: hue-rotate(155deg) saturate(2.2);
 }
 
-#musical-trigger:hover {
-  filter: brightness(1.12);
-}
-
-#musical-trigger:disabled {
-  opacity: 0.6;
-  cursor: wait;
-}
-
-#musical-sync-btn {
-  position: fixed;
-  right: 16px;
-  bottom: 210px;
-  z-index: 2147483647;
-  background: #2b2b2b;
-  color: #fff;
-  border: 1px solid rgba(255, 255, 255, 0.18);
-  border-radius: 50%;
-  width: 40px;
-  height: 40px;
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45);
-}
-
-#musical-sync-btn:hover {
-  filter: brightness(1.2);
+[data-musical="musical-action-btn"].musical-loading {
+  opacity: 0.6 !important;
+  cursor: wait !important;
 }
 
 #musical-sync-panel {
   position: fixed;
   right: 16px;
-  bottom: 96px;
+  top: 96px;
   width: 340px;
   max-width: 90vw;
   height: 420px;
@@ -399,7 +370,7 @@
 #musical-status {
   position: fixed;
   right: 16px;
-  bottom: 184px;
+  top: 72px;
   z-index: 2147483647;
   font-size: 12px;
   color: #fff;

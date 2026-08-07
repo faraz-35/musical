@@ -10,6 +10,43 @@ import transcribe
 import translate
 import youtube
 
+
+def _friendly_process_error(e: Exception) -> HTTPException:
+    """Map a raw yt-dlp / requests / translate exception from the /process
+    pipeline to a user-facing message + status. The extension surfaces
+    `detail` verbatim in its status toast, so these strings are what the user
+    reads. Keep them short and actionable."""
+    msg = str(e)
+    # yt-dlp rate-limit: YouTube 429'd us for rapid re-requests.
+    if "rate-limit" in msg or "rate limit" in msg:
+        return HTTPException(
+            status_code=429,
+            detail="YouTube rate-limited this request (too many in a row). "
+            "Wait ~an hour and try again.",
+        )
+    # yt-dlp: video gone/private/region-blocked.
+    if "is not available" in msg or "not available" in msg.lower():
+        return HTTPException(
+            status_code=404,
+            detail="That video isn't available (private, removed, or region-blocked).",
+        )
+    # Z.ai translation timed out (requests.exceptions.ReadTimeout / ConnectTimeout).
+    if "timed out" in msg.lower():
+        return HTTPException(
+            status_code=504,
+            detail="The translation API timed out. Try again in a moment.",
+        )
+    # Translation network error more generally.
+    if "connection" in msg.lower() or "max retries" in msg.lower():
+        return HTTPException(
+            status_code=502,
+            detail="Couldn't reach the translation service. Check your connection.",
+        )
+    # Fallback: surface the exception class so it's at least identifiable.
+    return HTTPException(
+        status_code=500, detail=f"Processing failed: {type(e).__name__}."
+    )
+
 load_dotenv()
 cache.init()
 
@@ -103,11 +140,22 @@ def build_record_from_transcription(meta):
     n = len(words)
     lines = []
     wi = 0  # running index into the flat word list
+    prev_end = None
     for idx, text in enumerate(line_texts):
         tokens = text.split()
         start = words[wi]["start"]
         end = words[min(wi + len(tokens) - 1, n - 1)]["end"]
         wi += len(tokens)
+        # Mirror align._enforce_monotonic: Whisper occasionally returns a word
+        # whose end <= start (degenerate timestamp), and grouped lines inherit
+        # that. Force a usable, monotonic span so the overlay never sees a
+        # backwards/empty line. (The /resync path gets this for free via align.)
+        if end <= start:
+            end = start + DEFAULT_LINE_GAP
+        if prev_end is not None and start < prev_end:
+            start = prev_end
+            if end <= start:
+                end = start + DEFAULT_LINE_GAP
         t = translations.get(idx, {"romanized": None, "direct": "", "meaning": ""})
         lines.append(
             {
@@ -119,6 +167,7 @@ def build_record_from_transcription(meta):
                 "meaning": t["meaning"],
             }
         )
+        prev_end = end
 
     return {
         "videoId": meta["videoId"],
@@ -160,27 +209,34 @@ def process(req: ProcessRequest):
         return cached
 
     url = f"https://www.youtube.com/watch?v={video_id}"
-    meta = youtube.get_metadata(url)
-    meta["videoId"] = video_id
-    meta["url"] = url
+    try:
+        meta = youtube.get_metadata(url)
+        meta["videoId"] = video_id
+        meta["url"] = url
 
-    lrc = lyrics.search_synced(
-        meta.get("artist"), meta.get("track"), meta.get("title") or ""
-    )
+        lrc = lyrics.search_synced(
+            meta.get("artist"), meta.get("track"), meta.get("title") or ""
+        )
 
-    record = None
-    if lrc:
-        try:
-            record = build_record(meta, lrc)
-        except translate.InputTooLarge as e:
-            raise HTTPException(status_code=413, detail=str(e))
+        record = None
+        if lrc:
+            try:
+                record = build_record(meta, lrc)
+            except translate.InputTooLarge as e:
+                raise HTTPException(status_code=413, detail=str(e))
 
-    if record is None:
-        # Slice 2 fallback: no synced lyrics — transcribe the audio.
-        try:
-            record = build_record_from_transcription(meta)
-        except transcribe.TranscriptionError as e:
-            raise HTTPException(status_code=502, detail=str(e))
+        if record is None:
+            # Slice 2 fallback: no synced lyrics — transcribe the audio.
+            try:
+                record = build_record_from_transcription(meta)
+            except transcribe.TranscriptionError as e:
+                raise HTTPException(status_code=502, detail=str(e))
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        # yt-dlp (DownloadError), requests (ReadTimeout/ConnectionError), etc.
+        raise _friendly_process_error(e)
 
     cache.put(record)
     return record
@@ -207,7 +263,11 @@ def resync(req: ResyncRequest):
     hints = [ln["start"] for ln in rec["lines"]]
 
     try:
-        words = transcribe.transcribe(url)
+        # Pass the trusted lyric text as Whisper's `prompt` so it transcribes in
+        # the SAME script (e.g. Latin-romanized) as our lyrics. Otherwise Whisper
+        # freely chooses Devanagari/Gurmukhi for Hindi/Punjabi audio and align.py
+        # scores zero token overlap -> resync becomes a silent no-op.
+        words = transcribe.transcribe(url, prompt=" ".join(line_texts))
     except transcribe.TranscriptionError as e:
         raise HTTPException(status_code=502, detail=str(e))
 

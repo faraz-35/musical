@@ -83,11 +83,19 @@ def _cleanup_dir(d):
         pass
 
 
-def transcribe(url):
+def transcribe(url, prompt=None):
     """Download audio for `url` and transcribe it via Groq Whisper.
 
     Returns a list of {"start": float, "end": float, "text": str} (one entry
     per transcribed word, in order). Raises TranscriptionError on failure.
+
+    `prompt` (optional) steers Whisper's output style/script. It is the trusted
+    lyric text on the /resync path, so Whisper emits words in the SAME script
+    (e.g. Latin-romanized) as the lyrics the aligner must match — without it,
+    Whisper freely chooses Devanagari/Gurmukhi for Hindi/Punjabi audio, and
+    `align.py`'s string-token matching scores zero overlap (see the prompt
+    parameter in Whisper's API: it biases toward the prompt's style/vocabulary).
+    Groq caps the prompt at 22 language tokens; we trim to stay under that.
     """
     key = os.environ.get("GROQ_API_KEY")
     if not key:
@@ -96,15 +104,23 @@ def transcribe(url):
     audio = download_audio(url)
     try:
         with open(audio, "rb") as f:
+            data = {
+                "model": MODEL,
+                "response_format": "verbose_json",
+                "timestamp_granularities[]": "word",
+            }
+            if prompt:
+                # Whisper's prompt is meant to be a prefix of the transcript;
+                # a handful of words is enough to pin the script/lexicon. Trim
+                # to ~22 tokens (Groq's documented cap) so we don't get a 400.
+                trimmed = " ".join(str(prompt).split()[:22])
+                if trimmed:
+                    data["prompt"] = trimmed
             resp = requests.post(
                 GROQ_URL,
                 headers={"Authorization": f"Bearer {key}"},
                 files={"file": (audio.name, f)},
-                data={
-                    "model": MODEL,
-                    "response_format": "verbose_json",
-                    "timestamp_granularities[]": "word",
-                },
+                data=data,
                 timeout=300,
             )
     finally:

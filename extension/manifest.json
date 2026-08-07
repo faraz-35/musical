@@ -3,6 +3,14 @@
   "name": "musical — poetic subtitles",
   "version": "0.1.0",
   "description": "Custom romanticized English subtitles for YouTube songs.",
+  "icons": {
+    "16": "icon-16.png",
+    "32": "icon-32.png",
+    "48": "icon-48.png",
+    "64": "icon-64.png",
+    "96": "icon-96.png",
+    "128": "icon-128.png"
+  },
   "permissions": ["storage"],
   "host_permissions": [
     "https://*.youtube.com/*",

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Keeps the musical backend (backend/main.py — a FastAPI app run via uvicorn)
+  always running: starts at login, auto-restarts if it exits/crashes
+  (KeepAlive), and survives reboots. The musical Firefox extension talks to
+  this server at http://127.0.0.1:8765.
+
+  Install / update after editing:
+    launchctl load -w ~/Library/LaunchAgents/com.faraz.musical.plist
+  Uninstall (stop + disable):
+    launchctl unload -w ~/Library/LaunchAgents/com.faraz.musical.plist
+  Tail the logs:
+    tail -f logs/launchd.out.log logs/launchd.err.log
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.faraz.musical</string>
+
+  <!-- Run uvicorn from the backend venv directly. WorkingDirectory is backend/
+       so `main:app` imports resolve (the modules are siblings of main.py) and
+       load_dotenv() picks up backend/.env. launchd has a minimal PATH, so we
+       call the venv's uvicorn binary by absolute path rather than relying on a
+       shell "uvicorn" lookup. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/farazshah/Programming/musical/backend/.venv/bin/uvicorn</string>
+    <string>main:app</string>
+    <string>--port</string>
+    <string>8765</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/farazshah/Programming/musical/backend</string>
+
+  <!-- The "always running" part: run at load and restart on any exit/crash.
+       The 10s throttle prevents a tight restart loop if it fails fast
+       (e.g. port already taken, or venv/env missing on a fresh clone). -->
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+
+  <key>StandardOutPath</key>
+  <string>/Users/farazshah/Programming/musical/logs/launchd.out.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/farazshah/Programming/musical/logs/launchd.err.log</string>
+
+  <!-- launchd starts us with a near-empty PATH. yt-dlp (used by youtube.py +
+       transcribe.py) shells out to ffmpeg/ffprobe at /opt/homebrew/bin for audio
+       extraction, so Homebrew must be on PATH. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

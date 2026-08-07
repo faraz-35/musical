@@ -17,11 +17,21 @@
   // nudge propagation mode: "none" | "a" | "b" (see nudgeLine)
   let nudgeMode = "none";
 
-  let overlayEl, romanizedEl, directEl, meaningEl, btnEl, statusEl;
-  let syncBtnEl, syncPanelEl, syncValueEl, syncListEl;
-  let resyncBtnEl;
+let overlayEl, romanizedEl, directEl, meaningEl, statusEl;
+let syncPanelEl, syncValueEl, syncListEl;
+let resyncBtnEl;
+// The injected native action-bar pill. We clone a real YouTube action button
+// (see injectActionBarButton) so it inherits YouTube's build-specific styling.
+// One element, two states: idle (🎵, click → generate) / ready (⚙, click →
+// open the sync panel). null until injection succeeds on a watch page.
+let actionBtnEl = null;
+// True while a backend generate is in flight (disables the pill click).
+let generating = false;
 
   const SYNC_MAX = 60;
+  // Mirror of backend align.DEFAULT_LINE_DUR: the minimum span (seconds) a
+  // sanitized/clamped line is given when its real end is unusable.
+  const DEFAULT_LINE_DUR_S = 4.0;
 
   function ensureUI() {
     if (overlayEl && document.body.contains(overlayEl)) return;
@@ -36,21 +46,8 @@
     meaningEl.className = "musical-line musical-meaning";
     overlayEl.append(romanizedEl, directEl, meaningEl);
 
-    btnEl = document.createElement("button");
-    btnEl.id = "musical-trigger";
-    btnEl.textContent = "🎵";
-    btnEl.title = "Generate sing-along subtitles for this song";
-    btnEl.addEventListener("click", onTrigger);
-
     statusEl = document.createElement("span");
     statusEl.id = "musical-status";
-
-    syncBtnEl = document.createElement("button");
-    syncBtnEl.id = "musical-sync-btn";
-    syncBtnEl.textContent = "⚙";
-    syncBtnEl.title = "Adjust subtitle timing";
-    syncBtnEl.style.display = "none";
-    syncBtnEl.addEventListener("click", toggleSyncPanel);
 
     syncPanelEl = document.createElement("div");
     syncPanelEl.id = "musical-sync-panel";
@@ -148,7 +145,7 @@
     syncListEl.className = "musical-sync-list";
     syncPanelEl.append(syncListEl);
 
-    document.body.append(overlayEl, btnEl, statusEl, syncBtnEl, syncPanelEl);
+    document.body.append(overlayEl, statusEl, syncPanelEl);
     renderSync();
   }
 
@@ -209,7 +206,15 @@
 
   function effectiveEnd(i) {
     const ln = currentRecord.lines[i];
-    return ln.end + syncData.global + (syncData.lines[i] ? syncData.lines[i].e : 0);
+    const end = ln.end + syncData.global + (syncData.lines[i] ? syncData.lines[i].e : 0);
+    // GUARD: a stale record (written before align.py's _enforce_monotonic, or a
+    // failed /resync that left bad data in browser.storage.local — which is NOT
+    // versioned per AGENTS.md) can have end <= start. Without this clamp the
+    // panel renders a backwards span ("2:50–1:50") and onTimeUpdate's hit
+    // window (t >= start && t < end) silently becomes empty, so the line never
+    // shows. Force end to at least start + a beat so it's always renderable.
+    const start = effectiveStart(i);
+    return end < start + 0.5 ? start + 0.5 : end;
   }
 
   function clamp(v) {
@@ -220,8 +225,9 @@
     const id = getVideoId();
     if (id) saveSync(id);
     renderSync();
-    currentLineIdx = -1; // force overlay re-evaluation so timing snaps immediately
-    onTimeUpdate();
+    // Force an immediate render so a nudge snaps the overlay to the new timing
+    // without waiting for the next timeupdate tick.
+    forceOverlayRender();
   }
 
   function nudgeGlobal(delta) {
@@ -259,6 +265,175 @@
 
   function saveDisplayPrefs() {
     api.storage.local.set({ [DISP_KEY]: displayPrefs });
+  }
+
+  // ---- native action-bar pill injection ----
+  // The trigger used to be a floating, draggable button. It now lives inside
+  // YouTube's own action bar (the Like/Share/Save row) as a native-looking
+  // pill. We can't style that from scratch: YouTube's button look comes from
+  // build-specific, obfuscated BEM classes (yt-spec-button-shape-next--*) that
+  // change between releases. So we CLONE a real sibling action button — which
+  // inherits YouTube's Polymer-initialized internals + style-scope classes —
+  // and mutate its icon/label. This is the same technique Return YouTube
+  // Dislike (and other action-bar extensions) use; building a node from
+  // scratch breaks on the next YouTube build.
+  //
+  // One element, two states, set by updateActionBtn():
+  //   idle  (no cached subs) → 🎵 glyph, click generates subtitles.
+  //   ready (cached)         → ⚙ glyph, click opens the sync panel.
+  // Never visible off the watch page or on >15min videos (same gates as before).
+
+  // Fallback chain for the action-bar container. YouTube's layout has changed
+  // across builds (#top-level-buttons-computed is the classic watch bar;
+  // #flexible-item-buttons and a bare menu div are newer fallbacks), so we try
+  // each in order and take whichever has a cloneable child button.
+  const ACTION_BAR_SELECTORS = [
+    "#top-level-buttons-computed",
+    "#flexible-item-buttons",
+    "ytd-menu-renderer > div#container",
+    "ytd-menu-renderer > div",
+  ];
+  // Marker we stamp on our injected node so we never double-inject and can find
+  // it again across YouTube's own re-renders.
+  const ACTION_BTN_MARKER = "musical-action-btn";
+
+  // Find an existing YouTube action button to clone, or null if the bar isn't
+  // ready yet. We prefer the LAST child (Share/Save end of the row) because the
+  // segmented Like/Dislike at the start is a different element type whose clone
+  // can mis-render; trailing action buttons (ytd-button-renderer /
+  // yt-button-view-model) are the cleanest single-button template.
+  function findActionBarTemplate() {
+    for (const sel of ACTION_BAR_SELECTORS) {
+      const bar = document.querySelector(sel);
+      if (!bar) continue;
+      const kids = Array.from(bar.children).filter(
+        (c) => c.tagName.toLowerCase().startsWith("ytd-") || c.tagName.toLowerCase().startsWith("yt-")
+      );
+      // Use the last real action button (skip any leftover markers/our own node).
+      for (let i = kids.length - 1; i >= 0; i--) {
+        const k = kids[i];
+        if (!k.hasAttribute("data-" + "musical")) return { bar, template: k };
+      }
+    }
+    return null;
+  }
+
+  // Inject (or re-find) the pill. Idempotent: if our node already exists in the
+  // bar, just rebind the click handler and return it. Returns the pill node or
+  // null if the action bar isn't present (caller retries).
+  function injectActionBarButton() {
+    const found = findActionBarTemplate();
+    if (!found) {
+      actionBtnEl = null;
+      return null;
+    }
+    const { bar, template } = found;
+
+    // Already injected and still attached? Rebind and reuse. (YouTube recreates
+    // the whole bar on navigation, so a stale reference is normal after nav.)
+    if (actionBtnEl && document.body.contains(actionBtnEl) && actionBtnEl.parentElement === bar) {
+      updateActionBtn();
+      return actionBtnEl;
+    }
+
+    // Drop any orphaned copy from a prior injection on this bar.
+    const stale = bar.querySelector("[" + "data-" + "musical='" + ACTION_BTN_MARKER + "']");
+    if (stale) stale.remove();
+
+    const clone = template.cloneNode(true);
+    clone.setAttribute("data-" + "musical", ACTION_BTN_MARKER);
+    clone.removeAttribute("hidden");
+    setGlyph(clone, "🎵");
+    clone.setAttribute("aria-label", "musical: generate sing-along subtitles");
+    clone.title = "Generate sing-along subtitles for this song";
+    // cloneNode copies attributes/DOM but NOT listeners added via addEventListener,
+    // so the cloned template's native click (e.g. Share) does not carry over —
+    // safe to attach our own.
+    clone.addEventListener("click", onActionBtnClick);
+    bar.append(clone);
+    actionBtnEl = clone;
+    updateActionBtn();
+    return actionBtnEl;
+  }
+
+  // Replace the glyph shown on our cloned action button. YouTube action buttons
+  // have TWO visible parts we must fully own: an icon (`.yt-spec-button-shape-
+  // next__icon` / `yt-icon`) and a label text span
+  // (`.yt-spec-button-shape-next__button-text-content` / the attributed-string
+  // span). If we only touch the icon, the cloned "Save"/"Share" label stays
+  // visible behind our glyph — that's the "blue box" artifact. So we DROP the
+  // label and put our glyph in the icon slot. (Our pills are icon-only: 🎵/⚙/⏳.)
+  function setGlyph(el, glyph) {
+    // Remove the text label entirely so only the icon shows.
+    const label =
+      el.querySelector(".yt-spec-button-shape-next__button-text-content") ||
+      el.querySelector(".yt-core-attributed-string");
+    if (label && label.parentElement) label.parentElement.removeChild(label);
+
+    // Put our glyph where the icon was. The icon host is the innermost icon
+    // container; fall back to the button / the node itself for safety.
+    const iconHost =
+      el.querySelector(".yt-spec-button-shape-next__icon") ||
+      el.querySelector("yt-icon") ||
+      el.querySelector("button") ||
+      el;
+    iconHost.textContent = glyph;
+  }
+
+  // Reflect the current app state on the pill: glyph + tooltip + click target
+  // depend on whether subtitles are cached (currentRecord) and whether we're
+  // generating. Honors the watch-page + duration gates so the pill is hidden
+  // off-watch and on long videos, matching the old floating-button behavior.
+  function updateActionBtn() {
+    if (!actionBtnEl) return;
+    const show = onWatchPage && !hiddenByDuration;
+    actionBtnEl.style.display = show ? "" : "none";
+
+    if (generating) {
+      setGlyph(actionBtnEl, "⏳");
+      actionBtnEl.setAttribute("aria-label", "musical: generating subtitles…");
+      actionBtnEl.title = "Generating subtitles…";
+      actionBtnEl.classList.add("musical-loading");
+      actionBtnEl.classList.remove("musical-ready");
+      return;
+    }
+    actionBtnEl.classList.remove("musical-loading");
+    const ready = !!currentRecord && show;
+    if (ready) {
+      setGlyph(actionBtnEl, "⚙");
+      actionBtnEl.setAttribute("aria-label", "musical: open subtitle timing panel");
+      actionBtnEl.title = "Open subtitle timing panel";
+      actionBtnEl.classList.add("musical-ready");
+    } else {
+      setGlyph(actionBtnEl, "🎵");
+      actionBtnEl.setAttribute("aria-label", "musical: generate sing-along subtitles");
+      actionBtnEl.title = "Generate sing-along subtitles for this song";
+      actionBtnEl.classList.remove("musical-ready");
+    }
+  }
+
+  // Single click target for the pill: generate when idle, open the sync panel
+  // when subtitles are cached. Disabled while a generate is in flight.
+  function onActionBtnClick() {
+    if (generating) return;
+    if (currentRecord) toggleSyncPanel();
+    else onTrigger();
+  }
+
+  // The action bar appears asynchronously after yt-navigate-finish, so retry
+  // on a backoff until the template is found or we give up (~6s). Keeps a
+  // single timer across calls so re-navigation doesn't pile up loops.
+  let injectTimer = null;
+  function ensureActionBarButton() {
+    if (injectTimer) clearTimeout(injectTimer);
+    let tries = 0;
+    const tick = () => {
+      injectTimer = null;
+      if (injectActionBarButton()) return;
+      if (++tries > 24) return; // ~6s of 250ms spacing
+      injectTimer = setTimeout(tick, 250);
+    };
+    tick();
   }
 
   function applyDisplay() {
@@ -339,10 +514,12 @@
     }
   }
 
-  function setSyncAvailable(available) {
-    if (!syncBtnEl) return;
-    syncBtnEl.style.display = available ? "block" : "none";
-    if (!available && syncPanelEl) syncPanelEl.style.display = "none";
+  // Closing the panel also refreshes the pill (it may need to switch back to
+  // the ⚙ glyph vs. just de-highlight). Kept as a small helper since open/close
+  // now both flow through the pill instead of a separate sync button.
+  function closeSyncPanel() {
+    if (!syncPanelEl) return;
+    syncPanelEl.style.display = "none";
   }
 
   function fmtTime(s) {
@@ -453,13 +630,32 @@
     }
   }
 
-  // Show the logo-only button as "ready" (green) once subtitles are cached.
-  // When subtitles are cached we hide the 🎵 trigger and show ⚙ instead —
-  // exactly one of them is visible at a time. setSyncAvailable shows/hides ⚙,
-  // this shows/hides 🎵 as the inverse.
-  function setBtnReady(ready) {
-    if (!btnEl) return;
-    btnEl.style.display = ready ? "none" : "block";
+  // True when the pill is forced off because the video is too long
+  // (> MAX_DURATION_S). Set by evaluateVisibility; read by updateActionBtn so
+  // the duration gate applies everywhere without each call site re-checking.
+  const MAX_DURATION_S = 15 * 60; // hide on videos longer than 15 minutes
+  let hiddenByDuration = false;
+
+  // True only on a watch page (a URL with ?v=). The pill is meaningless on
+  // home / search / channel pages, so we hide it there. Set by onNavigate.
+  let onWatchPage = false;
+
+  // Recompute the duration gate and re-apply the pill state. Called whenever
+  // the duration might have changed or become known: on navigation, on
+  // attaching the video, and on its loadedmetadata / durationchange events.
+  // NaN/unknown duration → not hidden (eligible), so short songs work while
+  // metadata is still loading.
+  function evaluateVisibility() {
+    const v = attachedVideo;
+    const dur = v ? v.duration : NaN;
+    const wasHidden = hiddenByDuration;
+    hiddenByDuration = Number.isFinite(dur) && dur > MAX_DURATION_S;
+    if (!wasHidden && !hiddenByDuration) return; // nothing to update
+
+    // Force-close the panel when we hide (no way to reopen it anyway).
+    if (hiddenByDuration) closeSyncPanel();
+
+    updateActionBtn();
   }
 
   function getVideoId() {
@@ -474,7 +670,56 @@
   async function loadFromCache(videoId) {
     const key = "musical:" + videoId;
     const bag = await api.storage.local.get(key);
-    return bag && bag[key] ? bag[key] : null;
+    const rec = bag && bag[key] ? bag[key] : null;
+    if (rec && Array.isArray(rec.lines)) {
+      // Self-heal stale records: the backend now guarantees monotonic, non-empty
+      // spans, but browser.storage.local is NOT versioned (per AGENTS.md), so a
+      // record written by an older backend — or left in place after a FAILED
+      // /resync — can contain end <= start lines that render as backwards
+      // spans ("2:50–1:50"). Repair and persist so it doesn't recur.
+      if (sanitizeRecord(rec)) {
+        await api.storage.local.set({ [key]: rec });
+      }
+    }
+    return rec;
+  }
+
+  // Repair a record's lines in place. Returns true if anything changed.
+  // Forces every span to be non-empty (end > start) and monotonic
+  // (start >= previous end), matching align.py's _enforce_monotonic contract.
+  function sanitizeRecord(rec) {
+    if (!rec || !Array.isArray(rec.lines)) return false;
+    let changed = false;
+    let prevEnd = null;
+    for (const ln of rec.lines) {
+      let start = Number.isFinite(ln.start) ? ln.start : 0;
+      let end = Number.isFinite(ln.end) ? ln.end : start + DEFAULT_LINE_DUR_S;
+      if (end <= start) {
+        end = start + DEFAULT_LINE_DUR_S;
+        changed = true;
+      }
+      if (prevEnd !== null && start < prevEnd) {
+        start = prevEnd;
+        if (end <= start) {
+          end = start + DEFAULT_LINE_DUR_S;
+        }
+        changed = true;
+      }
+      if (ln.start !== start) {
+        ln.start = round3(start);
+        changed = true;
+      }
+      if (ln.end !== end) {
+        ln.end = round3(end);
+        changed = true;
+      }
+      prevEnd = end;
+    }
+    return changed;
+  }
+
+  function round3(v) {
+    return Math.round(v * 1000) / 1000;
   }
 
   function clearOverlay() {
@@ -492,12 +737,21 @@
       return;
     }
     if (attachedVideo === v) {
-      onTimeUpdate();
+      evaluateVisibility(); // duration may have changed since we last looked
+      forceOverlayRender(); // record may have loaded since we last attached
       return;
     }
     attachedVideo = v;
     v.addEventListener("timeupdate", onTimeUpdate);
-    onTimeUpdate();
+    // Duration can arrive after we attach; re-evaluate the gate when it does.
+    v.addEventListener("loadedmetadata", evaluateVisibility);
+    v.addEventListener("durationchange", evaluateVisibility);
+    evaluateVisibility();
+    // Render immediately rather than waiting for the first timeupdate, so a
+    // record that was already loaded (cached on navigate, or just generated)
+    // shows its current line at once. This also covers the deferred case where
+    // attachVideo waited for the <video> to appear.
+    forceOverlayRender();
   }
 
   function onTimeUpdate() {
@@ -520,8 +774,18 @@
       return;
     }
     if (idx === currentLineIdx) return;
+    renderLine(idx);
+  }
+
+  // Render line `idx` into the overlay NOW and track it as current. Factored
+  // out of onTimeUpdate so it can be called directly after a record loads,
+  // guaranteeing the first line shows immediately instead of waiting for the
+  // next timeupdate (which can be up to ~250ms away and was the source of the
+  // "subtitles generated but not shown the first time" flakiness).
+  function renderLine(idx) {
+    if (!currentRecord || idx < 0 || idx >= currentRecord.lines.length) return;
     currentLineIdx = idx;
-    const ln = lines[idx];
+    const ln = currentRecord.lines[idx];
     const romanized = ln.romanized || "";
     romanizedEl.textContent = romanized;
     romanizedEl.style.display = romanized ? "block" : "none";
@@ -534,27 +798,64 @@
     }
   }
 
+  // Force an immediate overlay render based on the video's current time,
+  // bypassing the currentLineIdx short-circuit. Called right after a record
+  // loads (generate / navigate-to-cached) so subtitles appear without waiting
+  // for the next timeupdate tick.
+  function forceOverlayRender() {
+    if (!currentRecord || !attachedVideo) {
+      clearOverlay();
+      return;
+    }
+    const t = attachedVideo.currentTime;
+    const lines = currentRecord.lines;
+    let idx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      if (t >= effectiveStart(i) && t < effectiveEnd(i)) {
+        idx = i;
+        break;
+      }
+    }
+    if (idx === -1) {
+      clearOverlay();
+      return;
+    }
+    renderLine(idx);
+  }
+
   async function onNavigate() {
     ensureUI();
     await loadDisplayPrefs();
     const id = getVideoId();
+    onWatchPage = !!id;
     if (!id) {
-      setSyncAvailable(false);
+      // Off a watch page (home / search / channel): hide the pill, close any
+      // open panel, and clear any stale overlay from the previous video.
+      actionBtnEl = null; // the bar belongs to the previous page; drop the ref
+      updateActionBtn();
+      closeSyncPanel();
+      clearOverlay();
       return;
     }
     currentRecord = await loadFromCache(id);
+    // Inject (or re-find) the action-bar pill. The bar appears asynchronously
+    // after navigation, so ensureActionBarButton retries until it's there.
+    ensureActionBarButton();
     if (currentRecord) {
       await loadSync(id);
-      setBtnReady(true);
-      setSyncAvailable(true);
       attachVideo();
+      forceOverlayRender(); // show the current line immediately, no timeupdate wait
     } else {
-      setBtnReady(false);
       syncData = { global: 0, lines: [] };
       selectedLineIdx = -1;
-      setSyncAvailable(false);
+      closeSyncPanel();
       clearOverlay();
+      // Attach the video even without a cached record: we need its duration to
+      // apply the >15 min gate (e.g. on a long non-music video with no cached
+      // subtitles). attachVideo is a no-op if no <video> exists yet.
+      attachVideo();
     }
+    updateActionBtn();
   }
 
   function sendWithRetry(msg, attempts) {
@@ -578,12 +879,14 @@
       showStatus("Open a YouTube watch page first.", true);
       return;
     }
-    btnEl.disabled = true;
+    generating = true;
+    updateActionBtn();
     showStatus("Generating… (metadata + lyrics + translation)");
     sendWithRetry({ type: "process", url: location.href }, 3).then(
       (resp) => {
-        btnEl.disabled = false;
+        generating = false;
         if (!resp || !resp.ok) {
+          updateActionBtn();
           showStatus("Error: " + (resp ? resp.error : "no response from background"), true);
           return;
         }
@@ -592,14 +895,15 @@
           currentRecord = rec;
           currentLineIdx = -1;
           await loadSync(id); // preserve any existing sync for this video
-          setBtnReady(true);
-          setSyncAvailable(true);
           attachVideo();
+          forceOverlayRender(); // subtitles ready: show the current line now
+          updateActionBtn();
           showStatus("Done ✓");
         });
       },
       (err) => {
-        btnEl.disabled = false;
+        generating = false;
+        updateActionBtn();
         const reason = (err && err.message) ? err.message : String(err);
         showStatus("Error: send failed — " + reason, true);
       }
@@ -635,7 +939,7 @@
           syncData = { global: 0, lines: [] };
           await api.storage.local.remove(syncKey(id));
           renderSync();
-          onTimeUpdate();
+          forceOverlayRender();
           showStatus("Re-synced ✓");
         });
       },
