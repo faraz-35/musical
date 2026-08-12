@@ -1,7 +1,13 @@
 {
   "addons": {
     "musical@local": {
-      "updates": []
+      "updates": [
+        {
+          "version": "0.1.0",
+          "update_link": "https://github.com/faraz-35/musical/releases/download/v0.1.0/efccf9e378804b7fb185-0.1.0.xpi",
+          "update_hash": "sha256:ab1c567943f1fe7d8fc902c0d20aa31819b2e6f329f6bb71de7c496d41c0b6d8"
+        }
+      ]
     }
   }
 }
