@@ -1,0 +1,15 @@
+{
+  "name": "musical",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Custom romanticized English subtitles for YouTube songs. This package.json is for Firefox extension packaging/signing only — the app itself is the Python backend in backend/.",
+  "scripts": {
+    "lint": "web-ext lint --self-hosted --source-dir extension --ignore-files make_icons.py",
+    "build": "web-ext build --source-dir extension --overwrite-dest --ignore-files make_icons.py",
+    "sign": "node --env-file=.env node_modules/web-ext/bin/web-ext.js sign --source-dir extension --channel unlisted --ignore-files make_icons.py",
+    "release": "node --env-file=.env scripts/release.mjs"
+  },
+  "devDependencies": {
+    "web-ext": "^10.6.0"
+  }
+}

@@ -7,3 +7,6 @@ __pycache__/
 logs/
 .DS_Store
 .zcode/
+node_modules/
+web-ext-artifacts/
+.amo-upload-uuid

@@ -40,13 +40,54 @@ Requires `ffmpeg` on PATH (for the Slice 2 transcription path). Tested on macOS 
 
 ## Extension setup (Firefox)
 
-1. Go to `about:debugging#/runtime/this-firefox`
-2. "Load Temporary Add-on..." → select `extension/manifest.json`
-3. Open a YouTube song, click the **🎵 musical** button (bottom-right).
+1. Load it. Two options:
+   - **Temporary** (vanishes on restart): `about:debugging#/runtime/this-firefox` →
+     "Load Temporary Add-on..." → select `extension/manifest.json`.
+   - **Persistent** (survives restart + auto-updates): see below.
+2. Open a YouTube song, click the **🎵 musical** button (bottom-right).
 
-A temporary add-on is removed on Firefox restart. For a permanent install, package with
-[`web-ext`](https://github.com/mozilla/web-ext) and load via Developer/nightly builds, or
-sign it.
+### Persistent install (signed + auto-updating)
+
+Firefox Release won't keep an unsigned add-on across restarts, so the temporary
+load disappears each session. This path gets you a **self-distributed signed**
+XPI that installs permanently and **auto-updates** from a public GitHub repo.
+
+One-time setup:
+
+1. Create AMO API credentials: <https://addons.mozilla.org/developers/> →
+   **API Keys** → generate a key/secret pair.
+2. Put them in `.env`:
+   ```
+   WEB_EXT_API_KEY=user:your_jwt_issuer
+   WEB_EXT_API_SECRET=your_jwt_secret
+   ```
+3. Auth `gh` (done already if `gh auth status` shows your account).
+
+First release + install:
+
+```
+npm run release
+```
+
+This signs via AMO (unlisted), pushes `updates.json` to the repo, and publishes
+the signed XPI to a GitHub Release. Then install it once, manually:
+
+`about:addons` → gear → **Install Add-on From File** → pick the `.xpi` from
+`web-ext-artifacts/`. It now sticks across restarts, and its `update_url` points
+at the hosted manifest — future versions arrive automatically.
+
+Shipping an update:
+
+1. Bump `version` in `extension/manifest.json` (AMO rejects duplicate versions).
+2. `npm run release`. Installed copies upgrade within ~a day, or immediately via
+   `about:addons` → gear → **Check for Updates**.
+
+(The repo must be public: Firefox fetches the update manifest/XPI
+unauthenticated, and the XPI is the source zipped anyway. No secrets are in the
+repo — `backend/.env` and `.env` are gitignored; keys load via `os.environ`.)
+
+Other commands: `npm run lint` (excludes the dev-only `make_icons.py`),
+`npm run build`, `npm run sign`.
 
 ## Endpoints
 
