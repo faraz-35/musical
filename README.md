@@ -78,9 +78,17 @@ at the hosted manifest — future versions arrive automatically.
 
 Shipping an update:
 
-1. Bump `version` in `extension/manifest.json` (AMO rejects duplicate versions).
-2. `npm run release`. Installed copies upgrade within ~a day, or immediately via
-   `about:addons` → gear → **Check for Updates**.
+```
+npm run release
+```
+
+Bumps the version automatically (patch by default) in `extension/manifest.json`
++ `package.json`, signs, publishes, and pushes. Installed copies upgrade within
+~a day, or immediately via `about:addons` → gear → **Check for Updates**.
+
+Override the bump: `npm run release -- minor` (0.1.x → 0.2.0), `-- major`
+(→ 1.0.0), or `-- 1.2.0` for a specific version. A bump is always required (AMO
+rejects duplicate versions) — the script handles it.
 
 (The repo must be public: Firefox fetches the update manifest/XPI
 unauthenticated, and the XPI is the source zipped anyway. No secrets are in the
