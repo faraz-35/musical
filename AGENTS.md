@@ -65,7 +65,9 @@ Notes:
 - It calls the venv uvicorn directly
   (`backend/.venv/bin/uvicorn`) with `WorkingDirectory=backend/`, because
   launchd starts processes with a near-empty PATH. `main:app` then resolves its
-  sibling modules, and `load_dotenv()` picks up `backend/.env`.
+  sibling modules, and `load_dotenv()` (called with no path) searches upward
+  from `WorkingDirectory=backend/`; since there is no `backend/.env`, it picks
+  up the repo-root `.env` where `ZAI_API_KEY` / `GROQ_API_KEY` live.
 - `PATH` is set explicitly to include `/opt/homebrew/bin`: yt-dlp (in
   `youtube.py` + `transcribe.py`) shells out to `ffmpeg`/`ffprobe` there for
   audio extraction.
@@ -88,7 +90,7 @@ Verify changes manually from `backend/`:
 # 2. LRC parser sanity
 .venv/bin/python -c "import lyrics; print(len(lyrics.parse_lrc('[00:01.00]hi\n[00:03.50]bye')))"
 
-# 3. full pipeline for a real song (needs ZAI_API_KEY in .env, costs ~$0.02)
+# 3. full pipeline for a real song (needs ZAI_API_KEY in the repo-root .env, costs ~$0.02)
 .venv/bin/python -c "from dotenv import load_dotenv; load_dotenv(); import youtube,lyrics,translate as t; \
 m=youtube.get_metadata('https://www.youtube.com/watch?v=<ID>'); \
 p=lyrics.parse_lrc(lyrics.search_synced(m.get('artist'),m.get('track'),m.get('title') or '')); \
