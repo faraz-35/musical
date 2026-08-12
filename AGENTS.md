@@ -47,7 +47,9 @@ python3 -m venv .venv
 .venv/bin/uvicorn main:app --port 8765          # run the server
 ```
 
-### Backend auto-start (launchd)
+Requires **`deno`** on PATH (`brew install deno`) — yt-dlp needs a JS runtime
+for YouTube extraction (see gotcha #9). `requirements.txt` pins
+`yt-dlp[default]`, which pulls the `yt-dlp-ejs` solver scripts.
 
 `com.faraz.musical.plist` (checked in at repo root) runs the backend as a
 **LaunchAgent** that starts at login and auto-restarts on crash/exit
@@ -239,6 +241,16 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
    node with `data-musical` so we can find/avoid duplicating it. If the bar
    ever fails to be found, the pill simply won't appear — the page otherwise
    works. (This is the same technique Return YouTube Dislike uses.)
+9. **yt-dlp needs a JS runtime (Deno) + the `yt-dlp[default]` extra.** YouTube
+   extraction now requires executing JS (nsig / player challenges). Without a
+   runtime, every fetch fails with the misleading **"This video is not
+   available"** — a generic message that masks the real cause. Fix:
+   `requirements.txt` pins `yt-dlp[default]` (pulls `yt-dlp-ejs`, the solver
+   scripts), and `brew install deno` provides the runtime — auto-detected by
+   yt-dlp on PATH (the launchd plist's PATH includes `/opt/homebrew/bin`, so the
+   launchd-run backend finds it too). Symptom that exposed this: subtitle
+   generation returned nothing; `backend/musical.log` showed the yt-dlp
+   `No supported JavaScript runtime could be found` warning.
 
 ## Status
 
