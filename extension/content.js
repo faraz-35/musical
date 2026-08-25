@@ -436,6 +436,29 @@ let generating = false;
     tick();
   }
 
+  // YouTube rebuilds the action bar at times OTHER than yt-navigate-finish:
+  // on watch→watch navigation the bar often still holds the PREVIOUS video's
+  // buttons when the retry above runs, so we inject and the loop exits — then
+  // seconds later YouTube swaps the row for the new video's buttons, discarding
+  // our clone with the old container, and no further navigate event fires.
+  // The pill then stayed hidden for the rest of the video. This guard watches
+  // for our node being detached and re-runs the retry loop; it also covers a
+  // bar that appears later than the retry window (its appearance is itself a
+  // mutation). Coalesces YouTube's constant DOM churn into one contains()
+  // check per burst. (Same technique Return YouTube Dislike uses to survive
+  // action-bar re-renders.)
+  let recheckScheduled = false;
+  new MutationObserver(() => {
+    if (recheckScheduled) return;
+    recheckScheduled = true;
+    setTimeout(() => {
+      recheckScheduled = false;
+      if (!onWatchPage) return;
+      if (actionBtnEl && document.body.contains(actionBtnEl)) return;
+      ensureActionBarButton();
+    }, 200);
+  }).observe(document.body, { childList: true, subtree: true });
+
   function applyDisplay() {
     if (!overlayEl) return;
     overlayEl.classList.remove("musical-size-small", "musical-size-medium", "musical-size-large");

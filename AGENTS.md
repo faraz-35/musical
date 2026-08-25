@@ -78,8 +78,17 @@ Notes:
   `.venv/bin/uvicorn ...` run still works, but launchd will fight you for the
   port — unload first.
 
-Load the extension: Firefox → `about:debugging#/runtime/this-firefox` →
-"Load Temporary Add-on..." → select `extension/manifest.json`.
+Extension install/updates: the extension is distributed as an AMO-signed
+(unlisted) XPI published to GitHub Releases; installed copies (installed once
+from the XPI, visible in about:addons) **auto-update** via `updates.json` (the
+manifest's `update_url`). Shipping a change: commit it first, then
+`npm run release` (bumps patch by default; `-- minor` / `-- major` /
+`-- x.y.z` otherwise) — it signs via AMO, publishes the XPI, rewrites
+`updates.json`, and commits + pushes (note: it stages only manifest/package/
+updates files, so the code change must already be committed). Firefox checks
+for updates ~daily; force it via about:addons → gear → Check for Updates.
+The `about:debugging` temporary load is dev-only (see gotcha 3 for its reload
+order).
 
 ## Verification (there is no test suite / linter yet)
 
@@ -241,6 +250,14 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
    node with `data-musical` so we can find/avoid duplicating it. If the bar
    ever fails to be found, the pill simply won't appear — the page otherwise
    works. (This is the same technique Return YouTube Dislike uses.)
+   **The bar is ALSO rebuilt outside navigation events.** On watch→watch
+   navigation (next song / autoplay) the bar often still holds the previous
+   video's buttons when the retry loop runs, so injection succeeds — then
+   YouTube swaps the row seconds later and discards our clone. A
+   `MutationObserver` on `document.body` re-runs `ensureActionBarButton`
+   whenever our node is detached while on a watch page (coalesced to one
+   `contains()` check per mutation burst). Do not remove it: without it the
+   pill silently disappears when the song changes.
 9. **yt-dlp needs a JS runtime (Deno) + the `yt-dlp[default]` extra.** YouTube
    extraction now requires executing JS (nsig / player challenges). Without a
    runtime, every fetch fails with the misleading **"This video is not
