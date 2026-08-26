@@ -22,6 +22,11 @@ backend/    FastAPI service (Python 3.13, venv at backend/.venv)
   main.py        FastAPI app: /health, /process, /subtitles/{videoId}, /resync
   transcribe.py  Groq Whisper transcription: download_audio + transcribe (word-level)
   align.py       forced alignment of known lyric lines to Whisper word timestamps
+  captions.py    YouTube caption-track fetch + VTT parse (extra timing evidence)
+  agent_resync.py  /resync agentic path: evidence bundle, opencode runner,
+                 output validator ("agent proposes, code disposes")
+  prompts/resync_agent.md  the agent's self-contained instructions (method +
+                 every timing-source gotcha; the agent has no repo context)
 
 extension/  Firefox MV3
   manifest.json  content script + background script
@@ -50,6 +55,14 @@ python3 -m venv .venv
 Requires **`deno`** on PATH (`brew install deno`) — yt-dlp needs a JS runtime
 for YouTube extraction (see gotcha #9). `requirements.txt` pins
 `yt-dlp[default]`, which pulls the `yt-dlp-ejs` solver scripts.
+
+The agentic `/resync` path additionally uses the **`opencode` CLI**
+(`~/.opencode/bin/opencode`, headless `opencode run`) — optional; when absent
+or failing, `/resync` silently falls back to the algorithmic aligner. Env
+knobs: `OPENCODE_MODEL` (default `zai-coding-plan/glm-5.2`) and
+`MUSICAL_AGENT_TIMEOUT` seconds (default 480 — a full agent run takes ~6–7
+minutes; opencode buffers its streamed events when piped, so a silent
+"timeout" usually means the model was still working, not hung).
 
 `com.faraz.musical.plist` (checked in at repo root) runs the backend as a
 **LaunchAgent** that starts at login and auto-restarts on crash/exit
@@ -146,6 +159,22 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   `align.py` re-pins their `start`/`end` to fresh word timestamps. This matters
   because Whisper transcribes sung Persian/Arabic poorly and often emits
   "موسیقی" (music) placeholders for instrumentals; we never want that text.
+- **`/resync` is agentic-first, algorithmic-fallback ("agent proposes, code
+  disposes").** When the `opencode` CLI is available, `/resync` gathers every
+  timing source into an evidence bundle — fresh Whisper words, ALL of the
+  video's manual caption tracks (each translation is timed independently, so
+  the agent must pick the lyric-language one and measure THAT track's lag),
+  and the cached lines — and runs a headless `opencode run` in a scratch dir
+  with `prompts/resync_agent.md` as its complete instructions. The agent
+  writes `timing.json`; `agent_resync.validated_spans` checks completeness /
+  finiteness and repairs monotonicity through `align._enforce_monotonic`, the
+  same enforcement the deterministic path uses. ANY failure (no binary,
+  timeout, invalid output) falls back to `align.align_lines`, so the button
+  never dead-ends. Why: the algorithmic aligner can't judge WHICH source is
+  lying (caption track +5.04s late, LRC timed to a different edit, Whisper
+  hallucination blocks) — a model reading the raw evidence can, and did on
+  `vtNJMAyeP0s` (Indila — Tourner Dans Le Vide), where it recovered timing
+  the aligner couldn't.
 - **`/resync` passes the lyric text as Whisper's `prompt`.** The cached lyrics
   are often Latin-romanized (e.g. `Rabb manneya tainu`), but left to itself
   Whisper transcribes Hindi/Punjabi audio in Devanagari/Gurmukhi (`रभ मन
@@ -268,6 +297,28 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
    launchd-run backend finds it too). Symptom that exposed this: subtitle
    generation returned nothing; `backend/musical.log` showed the yt-dlp
    `No supported JavaScript runtime could be found` warning.
+10. **The default yt-dlp client's MEDIA urls can 403 persistently — fall back
+   to mweb.** On some networks the default chain resolves to `ANDROID_VR`
+   googlevideo URLs (`c=ANDROID_VR` in the download URL) that the CDN blocks
+   with HTTP 403 on every attempt, even though metadata extraction and
+   subtitle downloads succeed. This is what broke "Re-sync from audio" on
+   real songs. `transcribe.download_audio` retries a 403 via
+   `player_client=mweb`, whose media URLs still download. Note the inverse:
+   mweb DISCARDS subtitle formats without a GVS PO token, so
+   `captions.fetch_best` must use the default client (caption data isn't
+   affected by the media 403). One yt-dlp invocation per job — never mix.
+11. **Caption tracks can carry a constant whole-track offset, and each
+   translation track is timed independently.** An uploader caption track is
+   human-timed and beautifully paced INTERNALLY, but its absolute times can
+   sit a constant offset from the audio (measured: +5.04s late on every cue
+   of the French track for `vtNJMAyeP0s`; the German track of the same video
+   was offset differently, with different cue segmentation). Never trust
+   caption absolute times without cross-checking a sample of cues against
+   Whisper word onsets (pair by fuzzy text, take the median lag of clean,
+   unique-text anchors). This adjudication is exactly what the agentic
+   `/resync` path does; the method + every failure mode is written into
+   `backend/prompts/resync_agent.md`, which is the agent's ONLY context (it
+   never sees this file).
 
 ## Status
 

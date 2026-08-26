@@ -4,7 +4,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 import align
+import agent_resync
 import cache
+import captions
 import lyrics
 import transcribe
 import translate
@@ -247,10 +249,21 @@ def resync(req: ResyncRequest):
     """Re-align a cached record's timing against the actual audio.
 
     Used by the extension's "Re-sync from audio" button when synced-lyric
-    timestamps drift from the audio (common for live recordings). Re-transcribes
-    the source audio via Groq and aligns the existing lyric texts to the fresh
-    word timestamps, overwriting start/end while preserving the text and all
-    translations.
+    timestamps drift from the audio (common for music videos whose LRC was
+    timed to a different edit). Two paths, best-evidence-first:
+
+      1. Agentic (when the opencode CLI is installed): gather every timing
+         source — fresh Groq Whisper words, the video's caption track, and the
+         cached lines — into an evidence bundle and let an LLM agent
+         adjudicate them (e.g. measuring a constant caption offset against
+         acoustic anchors). See prompts/resync_agent.md. Its timing.json is
+         validated + monotonicity-repaired before use.
+      2. Algorithmic fallback (align.align_lines) — also used whenever the
+         agent is unavailable, times out, or returns output that fails
+         validation, and when only Whisper evidence exists.
+
+    Both paths overwrite start/end only; lyric text and translations are never
+    touched (transcription/caption text is timing evidence, never trusted).
     """
     rec = cache.get(req.videoId)
     if not rec:
@@ -262,6 +275,9 @@ def resync(req: ResyncRequest):
     line_texts = [ln["original"] for ln in rec["lines"]]
     hints = [ln["start"] for ln in rec["lines"]]
 
+    # --- gather evidence; every source is optional except where noted ------
+    words = None
+    words_error = None
     try:
         # Pass the trusted lyric text as Whisper's `prompt` so it transcribes in
         # the SAME script (e.g. Latin-romanized) as our lyrics. Otherwise Whisper
@@ -269,9 +285,57 @@ def resync(req: ResyncRequest):
         # scores zero token overlap -> resync becomes a silent no-op.
         words = transcribe.transcribe(url, prompt=" ".join(line_texts))
     except transcribe.TranscriptionError as e:
-        raise HTTPException(status_code=502, detail=str(e))
+        words_error = e
+        print(f"[musical] resync: transcription failed: {e}", flush=True)
 
-    spans = align.align_lines(line_texts, words, hints=hints)
+    caps = None
+    try:
+        caps = captions.fetch_best(url, line_texts)
+        if caps:
+            primary = caps["primary"]
+            print(
+                "[musical] resync: captions: "
+                + (
+                    f"primary {primary['track']} score={primary['score']} "
+                    f"({len(primary['cues'])} cues)"
+                    if primary
+                    else "no lyric-matching track"
+                )
+                + f"; {len(caps['alternates'])} tracks total",
+                flush=True,
+            )
+    except captions.CaptionError as e:
+        print(f"[musical] resync: captions unavailable: {e}", flush=True)
+
+    duration = None
+    try:
+        duration = youtube.get_metadata(url).get("duration")
+    except Exception as e:
+        print(f"[musical] resync: metadata unavailable: {e}", flush=True)
+
+    # --- agentic path: propose timings, then validate ----------------------
+    spans = None
+    if words is not None or caps is not None:
+        bundle = agent_resync.build_bundle(
+            rec, words=words, captions=caps, duration=duration
+        )
+        output = agent_resync.run_agent(bundle)
+        spans = agent_resync.validated_spans(output, len(rec["lines"]), duration)
+        if spans is not None:
+            print(
+                f"[musical] resync: applied agentic timing ({len(spans)} lines)",
+                flush=True,
+            )
+
+    # --- deterministic fallback (needs Whisper words) ----------------------
+    if spans is None:
+        if words is None:
+            raise HTTPException(status_code=502, detail=str(words_error))
+        spans = agent_resync.clamp_spans(
+            align.align_lines(line_texts, words, hints=hints), duration
+        )
+        print("[musical] resync: applied algorithmic alignment", flush=True)
+
     for ln, span in zip(rec["lines"], spans):
         ln["start"] = span["start"]
         ln["end"] = span["end"]

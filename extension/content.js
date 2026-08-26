@@ -944,7 +944,7 @@ let generating = false;
       return;
     }
     resyncBtnEl.disabled = true;
-    showStatus("Re-syncing from audio… (downloads + transcribes)");
+    showStatus("Re-syncing from audio… (download + transcription + AI timing — may take a couple of minutes)");
     sendWithRetry({ type: "resync", videoId: id }, 3).then(
       (resp) => {
         resyncBtnEl.disabled = false;

@@ -31,12 +31,32 @@ class TranscriptionError(RuntimeError):
     """Raised when audio download or transcription fails."""
 
 
+def _download_opts(outtmpl, player_client=None):
+    opts = {
+        "quiet": True,
+        "no_warnings": True,
+        "noplaylist": True,
+        "format": "bestaudio/best",
+        "outtmpl": outtmpl,
+        # Convert to 16kHz mono — Whisper's expected input, and keeps the file
+        # well under Groq's 25MB cap.
+        "postprocessor_args": ["-ar", "16000", "-ac", "1"],
+    }
+    if player_client:
+        opts["extractor_args"] = {"youtube": {"player_client": [player_client]}}
+    return opts
+
+
 def download_audio(url, timeout=180):
     """Download a YouTube video's audio to a temp 16kHz mono file.
 
     Returns a Path to the downloaded file (caller should unlink it). Uses the
     noplaylist + canonical watch-URL pattern from youtube.get_metadata so the
     radio-mix playlist can't trigger a full extraction (gotcha #2).
+
+    The default client chain can resolve to ANDROID_VR media URLs that some
+    networks block with a persistent 403 (the failure that broke Re-sync on
+    real songs); on a 403 we retry via mweb, whose media URLs still download.
     """
     import yt_dlp
 
@@ -49,25 +69,24 @@ def download_audio(url, timeout=180):
     tmpdir = Path(tempfile.mkdtemp(prefix="musical-audio-"))
     outtmpl = str(tmpdir / "%(id)s.%(ext)s")
 
-    opts = {
-        "quiet": True,
-        "no_warnings": True,
-        "noplaylist": True,
-        "format": "bestaudio/best",
-        "outtmpl": outtmpl,
-        # Convert to 16kHz mono — Whisper's expected input, and keeps the file
-        # well under Groq's 25MB cap.
-        "postprocessor_args": ["-ar", "16000", "-ac", "1"],
-    }
     try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([target])
+        try:
+            with yt_dlp.YoutubeDL(_download_opts(outtmpl)) as ydl:
+                ydl.download([target])
+        except Exception as e:
+            if "403" not in str(e):
+                raise
+            with yt_dlp.YoutubeDL(_download_opts(outtmpl, "mweb")) as ydl:
+                ydl.download([target])
     except Exception as e:
         _cleanup_dir(tmpdir)
         raise TranscriptionError(f"Audio download failed: {e}") from e
 
-    # Find the first non-empty media file yt-dlp produced.
+    # Find the non-empty media file yt-dlp produced. Skip .part/.ytdl residue
+    # so a partial file from a failed first attempt can never be picked up.
     for c in sorted(tmpdir.iterdir()):
+        if c.suffix in (".part", ".ytdl"):
+            continue
         if c.is_file() and c.stat().st_size > 0:
             return c
     raise TranscriptionError("Audio download produced no output file.")
