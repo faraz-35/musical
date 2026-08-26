@@ -11,6 +11,11 @@
           "version": "0.1.1",
           "update_link": "https://github.com/faraz-35/musical/releases/download/v0.1.1/efccf9e378804b7fb185-0.1.1.xpi",
           "update_hash": "sha256:f1f923a4ddf61512e2424a1ac785c77f85add805dc3352036acf599e05cbc6eb"
+        },
+        {
+          "version": "0.1.2",
+          "update_link": "https://github.com/faraz-35/musical/releases/download/v0.1.2/efccf9e378804b7fb185-0.1.2.xpi",
+          "update_hash": "sha256:2de3f9fd13710aa0b8b94ef0cc42e32a2c67bf18d326c81e032814423c80525c"
         }
       ]
     }
