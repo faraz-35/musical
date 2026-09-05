@@ -22,7 +22,7 @@ let syncPanelEl, syncValueEl, syncListEl;
 let resyncBtnEl;
 // The injected native action-bar pill. We clone a real YouTube action button
 // (see injectActionBarButton) so it inherits YouTube's build-specific styling.
-// One element, two states: idle (🎵, click → generate) / ready (⚙, click →
+// One element, two states: idle (♫, click → generate) / ready (⚙, click →
 // open the sync panel). null until injection succeeds on a watch page.
 let actionBtnEl = null;
 // True while a backend generate is in flight (disables the pill click).
@@ -279,7 +279,7 @@ let generating = false;
   // scratch breaks on the next YouTube build.
   //
   // One element, two states, set by updateActionBtn():
-  //   idle  (no cached subs) → 🎵 glyph, click generates subtitles.
+  //   idle  (no cached subs) → ♫ glyph, click generates subtitles.
   //   ready (cached)         → ⚙ glyph, click opens the sync panel.
   // Never visible off the watch page or on >15min videos (same gates as before).
 
@@ -343,7 +343,7 @@ let generating = false;
     const clone = template.cloneNode(true);
     clone.setAttribute("data-" + "musical", ACTION_BTN_MARKER);
     clone.removeAttribute("hidden");
-    setGlyph(clone, "🎵");
+    setGlyph(clone, "♫");
     clone.setAttribute("aria-label", "musical: generate sing-along subtitles");
     clone.title = "Generate sing-along subtitles for this song";
     // cloneNode copies attributes/DOM but NOT listeners added via addEventListener,
@@ -362,7 +362,10 @@ let generating = false;
   // (`.yt-spec-button-shape-next__button-text-content` / the attributed-string
   // span). If we only touch the icon, the cloned "Save"/"Share" label stays
   // visible behind our glyph — that's the "blue box" artifact. So we DROP the
-  // label and put our glyph in the icon slot. (Our pills are icon-only: 🎵/⚙/⏳.)
+  // label and put our glyph in the icon slot. (Our pills are icon-only: ♫/⚙/⏳.)
+  // Glyphs must be text-presentation characters (♫, ⚙): color emoji (e.g. 🎵)
+  // renders through the emoji font with its own fixed colors and ignores the
+  // button's inherited white.
   function setGlyph(el, glyph) {
     // Remove the text label entirely so only the icon shows.
     const label =
@@ -405,7 +408,7 @@ let generating = false;
       actionBtnEl.title = "Open subtitle timing panel";
       actionBtnEl.classList.add("musical-ready");
     } else {
-      setGlyph(actionBtnEl, "🎵");
+      setGlyph(actionBtnEl, "♫");
       actionBtnEl.setAttribute("aria-label", "musical: generate sing-along subtitles");
       actionBtnEl.title = "Generate sing-along subtitles for this song";
       actionBtnEl.classList.remove("musical-ready");
