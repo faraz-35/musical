@@ -1,6 +1,6 @@
 {
   "name": "musical",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "description": "Custom romanticized English subtitles for YouTube songs. This package.json is for Firefox extension packaging/signing only — the app itself is the Python backend in backend/.",
   "scripts": {
