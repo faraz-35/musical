@@ -30,7 +30,7 @@ backend/    FastAPI service (Python 3.13, venv at backend/.venv)
 
 extension/  Firefox MV3
   manifest.json  content script + background script
-  content.js     overlay rendering; injects a native action-bar pill (🎵/⚙);
+  content.js     overlay rendering; injects a native action-bar pill (♫/⚙);
                  syncs to <video> timeupdate; per-line timing editor (global +
                  per-line nudge); "Re-sync from audio" button (Groq)
   background.js  performs the backend fetch (NOT the content script — see gotchas)
@@ -100,8 +100,9 @@ manifest's `update_url`). Shipping a change: commit it first, then
 `updates.json`, and commits + pushes (note: it stages only manifest/package/
 updates files, so the code change must already be committed). Firefox checks
 for updates ~daily; force it via about:addons → gear → Check for Updates.
-The `about:debugging` temporary load is dev-only (see gotcha 3 for its reload
-order).
+about:debugging is NOT used on this machine — never suggest it, not even for
+local verification; the signed-XPI + force-update path above is the only
+install/update path.
 
 ## Verification (there is no test suite / linter yet)
 
@@ -145,7 +146,7 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
 - **The trigger is a native action-bar pill, not a floating button.**
   `injectActionBarButton` clones a real sibling action button (the last child
   of `#top-level-buttons-computed` / `#flexible-item-buttons`) and mutates its
-  glyph + label. One element, two states set by `updateActionBtn`: idle (🎵,
+  glyph + label. One element, two states set by `updateActionBtn`: idle (♫,
   click → generate) and ready (⚙, click → open the sync panel). It cannot be
   dragged — it lives wherever YouTube puts the action bar. The dense sync
   panel stays a floating panel anchored top-right. The older floating/draggable
@@ -227,7 +228,7 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   older version (a plain `DELETE` left stale column sets in place, so new
   columns like `url` never appeared). Extension-side `browser.storage.local`
   is not versioned — old records there simply won't render the new fields, so
-  the user should click 🎵 again after a schema change.
+  the user should click ♫ again after a schema change.
 - **The record stores its source `url`** so `/resync` can re-download the audio
   without the extension re-sending it.
 - Cache record shape (shared contract between backend and extension):
@@ -248,10 +249,12 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
    `watch?v=<id>` URL (see `youtube.get_metadata`). The radio-mix playlist
    otherwise makes yt-dlp extract the entire mix and YouTube rate-limits the
    IP for ~an hour.
-3. **Extension reload order.** After editing extension files: Reload in
-   `about:debugging`, THEN reload the YouTube tab — otherwise the content
-   script is orphaned from the new background ("receiving end does not exist").
-   `content.js` already retries on that error.
+3. **Extension install/update path is the signed XPI, never about:debugging.**
+   To get edited extension files onto the browser: commit + `npm run release`,
+   then about:addons → gear → Check for Updates. (Historical note: a temporary
+   about:debugging load requires reloading it BEFORE the YouTube tab, else the
+   content script is orphaned from the new background — "receiving end does not
+   exist". `content.js` already retries on that error.)
 4. **RTL / non-Latin lyrics.** syncedlyrics coverage is strong for French /
    Western and spottier for Persian / Arabic — those misses are what Slice 2
   (Whisper) is meant to cover.
