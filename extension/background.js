@@ -31,8 +31,25 @@ async function resync(videoId) {
   return await resp.json();
 }
 
+async function getSubtitles(videoId) {
+  console.log("[musical] background get:", videoId);
+  const resp = await fetch(BACKEND + "/subtitles/" + videoId);
+  if (!resp.ok) {
+    const err = await resp.json().catch(() => ({}));
+    throw new Error(err.detail || "HTTP " + resp.status);
+  }
+  return await resp.json();
+}
+
 api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   console.log("[musical] message received:", msg);
+  if (msg && msg.type === "get") {
+    getSubtitles(msg.videoId).then(
+      (rec) => sendResponse({ ok: true, rec }),
+      (err) => sendResponse({ ok: false, error: err.message })
+    );
+    return true;
+  }
   if (msg && msg.type === "process") {
     process(msg.url).then(
       (rec) => {

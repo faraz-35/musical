@@ -176,6 +176,23 @@
   border-color: #4a9dff;
 }
 
+/* Hide/Show lyrics toggle — same look as the background toggle */
+#musical-hide-btn {
+  flex: 0 0 auto;
+  width: 44px;
+  height: 24px;
+  background: #2a2a2a;
+  color: #aaa;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  font-size: 11px;
+  cursor: pointer;
+}
+#musical-hide-btn:hover {
+  background: #353535;
+  color: #ddd;
+}
+
 .musical-sync-header {
   flex: 0 0 auto;
 }

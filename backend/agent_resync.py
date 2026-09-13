@@ -32,7 +32,7 @@ import align
 PROMPT_PATH = Path(__file__).parent / "prompts" / "resync_agent.md"
 
 # The zai-coding-plan provider in opencode; override with OPENCODE_MODEL.
-DEFAULT_MODEL = "zai-coding-plan/glm-5.2"
+DEFAULT_MODEL = "zai-coding-plan/glm-5.3-flash"
 # A full run (the agent pages through the bundle with its file tool, then
 # does the anchor math and writes timing.json) took ~6.5 minutes; the timeout
 # covers that with headroom. Earlier "hangs" were just this runtime exceeding

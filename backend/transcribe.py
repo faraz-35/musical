@@ -7,9 +7,9 @@ Two roles:
      that is aligned against the already-trusted lyric text in the cache.
 
 Groq hosts OpenAI's Whisper models on their hardware; the free tier allows
-~2000 requests/day with a 25MB file cap. A typical song is 3-8MB as 16kHz mono
-opus/m4a, well under the cap. We request word-level timestamps so align.py can
-pin our lyrics to the actual audio.
+~2000 requests/day with a 25MB file cap. Audio is re-encoded to 16kHz mono
+mp3 at 64kbps (~0.5MB/min), so a typical song is ~2-3MB. We request word-level
+timestamps so align.py can pin our lyrics to the actual audio.
 
 Audio is downloaded with yt-dlp using the same noplaylist + canonical-URL
 pattern as youtube.py (see gotcha #2 in AGENTS.md).
@@ -38,8 +38,16 @@ def _download_opts(outtmpl, player_client=None):
         "noplaylist": True,
         "format": "bestaudio/best",
         "outtmpl": outtmpl,
-        # Convert to 16kHz mono — Whisper's expected input, and keeps the file
-        # well under Groq's 25MB cap.
+        # Re-encode to 16kHz mono mp3 — Whisper's expected input. The
+        # postprocessor is what makes ffmpeg actually run: bare
+        # `postprocessor_args` are ignored when yt-dlp saves the raw stream,
+        # and a raw opus stream can exceed Groq's 25MB upload cap (HTTP 413).
+        # 64kbps mono is ~0.5MB/min, so even an hour-long video fits.
+        "postprocessors": [{
+            "key": "FFmpegExtractAudio",
+            "preferredcodec": "mp3",
+            "preferredquality": "64",
+        }],
         "postprocessor_args": ["-ar", "16000", "-ac", "1"],
     }
     if player_client:

@@ -63,6 +63,18 @@ app.add_middleware(
 
 DEFAULT_LINE_GAP = 4.0
 
+# Written into every record the API returns so the extension can tell the
+# current contract from stale copies lingering in browser.storage.local (which
+# is not versioned). Stamped at the API boundary rather than stored: the cache
+# persists only the lines array, and a schema bump would needlessly wipe it.
+# v2 = verse-length line grouping + this marker itself.
+RECORD_VERSION = 2
+
+
+def _with_v(rec):
+    rec["v"] = RECORD_VERSION
+    return rec
+
 
 class ProcessRequest(BaseModel):
     url: str
@@ -107,29 +119,64 @@ def build_record(meta, lrc_text):
     }
 
 
+# Transcription line grouping. A pause split alone is not enough: sung audio
+# rarely pauses >= SPLIT_GAP_S between phrases, so words chain into one cue
+# holding a whole verse (observed: an entire song in a single 106s cue) and
+# the overlay shows a paragraph. Lines are therefore also capped by word count
+# and span, and an over-cap line splits at its largest internal inter-word
+# gap — the closest thing to a phrase boundary.
+SPLIT_GAP_S = 1.5
+MAX_LINE_WORDS = 12
+MAX_LINE_DUR_S = 8.0
+
+
+def group_words_into_lines(words):
+    """Group Whisper word dicts ({text, start, end}) into verse-length lines.
+
+    Returns a list of line texts, in word order. A line ends at a pause of
+    >= SPLIT_GAP_S; a line that would grow past MAX_LINE_WORDS or
+    MAX_LINE_DUR_S splits at its largest internal gap instead.
+    """
+    lines = []
+    cur = []
+
+    def emit_through(i):
+        # Close a line from cur[0..i]; the rest stays as the working line.
+        lines.append(" ".join(w["text"] for w in cur[: i + 1]))
+        del cur[: i + 1]
+
+    for w in words:
+        if cur and w["start"] - cur[-1]["end"] >= SPLIT_GAP_S:
+            emit_through(len(cur) - 1)
+        cur.append(w)
+        if len(cur) < MAX_LINE_WORDS and w["end"] - cur[0]["start"] <= MAX_LINE_DUR_S:
+            continue
+        # Over cap: split at the most phrase-like internal gap — the largest,
+        # nudged toward the middle so an evenly-sung run (flat gaps) splits
+        # into even halves instead of at an arbitrary edge.
+        n = len(cur)
+        best_i, best_score = 0, None
+        for i in range(n - 1):
+            gap = cur[i + 1]["start"] - cur[i]["end"]
+            score = gap - 0.5 * abs((i + 1) / n - 0.5)
+            if best_score is None or score > best_score:
+                best_i, best_score = i, score
+        emit_through(best_i)
+    if cur:
+        emit_through(len(cur) - 1)
+    return lines
+
+
 def build_record_from_transcription(meta):
     """Slice 2 path: no synced lyrics, so the audio itself provides both the
     lyric text and the per-line timing via Groq Whisper.
 
-    Word-level timestamps from Whisper are grouped into lines on pauses: a gap
-    of >= SPLIT_GAP seconds between words ends a line. The grouped text is then
-    translated by GLM-4.6 like any other lyric.
+    Word-level timestamps from Whisper are grouped into verse-length lines by
+    group_words_into_lines (pause splits + word/span caps). The grouped text is
+    then translated by GLM like any other lyric.
     """
-    SPLIT_GAP = 1.5
     words = transcribe.transcribe(meta["url"])
-
-    # Group words into lines on inter-word gaps.
-    line_texts = []
-    cur = []
-    last_end = None
-    for w in words:
-        if last_end is not None and w["start"] - last_end >= SPLIT_GAP and cur:
-            line_texts.append(" ".join(cur))
-            cur = []
-        cur.append(w["text"])
-        last_end = w["end"]
-    if cur:
-        line_texts.append(" ".join(cur))
+    line_texts = group_words_into_lines(words)
 
     if not line_texts:
         raise HTTPException(
@@ -195,7 +242,7 @@ def get_subtitles(video_id: str):
             status_code=404,
             detail="No cached subtitles for this video. POST /process first.",
         )
-    return rec
+    return _with_v(rec)
 
 
 @app.post("/process")
@@ -208,7 +255,7 @@ def process(req: ProcessRequest):
 
     cached = cache.get(video_id)
     if cached:
-        return cached
+        return _with_v(cached)
 
     url = f"https://www.youtube.com/watch?v={video_id}"
     try:
@@ -241,7 +288,7 @@ def process(req: ProcessRequest):
         raise _friendly_process_error(e)
 
     cache.put(record)
-    return record
+    return _with_v(record)
 
 
 @app.post("/resync")
@@ -341,4 +388,4 @@ def resync(req: ResyncRequest):
         ln["end"] = span["end"]
 
     cache.put(rec)
-    return rec
+    return _with_v(rec)

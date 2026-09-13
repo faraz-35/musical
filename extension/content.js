@@ -123,6 +123,11 @@ let generating = false;
     bgBtn.title = "Toggle background box";
     bgBtn.addEventListener("click", toggleBg);
     dispRow.append(bgBtn);
+    const hideBtn = document.createElement("button");
+    hideBtn.id = "musical-hide-btn";
+    hideBtn.title = "Hide the lyrics overlay";
+    hideBtn.addEventListener("click", toggleHidden);
+    dispRow.append(hideBtn);
     syncHeader.append(dispRow);
 
     // Re-sync from audio: re-transcribes via Groq and re-aligns line timing.
@@ -249,7 +254,8 @@ let generating = false;
 
   // ---- display preferences (global, persisted) ----
   // Applied as classes on the overlay: text size + optional background box.
-  let displayPrefs = { size: "medium", bg: true };
+  // `hidden` suppresses the overlay entirely (the pill and panel keep working).
+  let displayPrefs = { size: "medium", bg: true, hidden: false };
 
   const DISP_KEY = "musical:display";
 
@@ -259,6 +265,7 @@ let generating = false;
     displayPrefs = {
       size: v && ["small", "medium", "large"].includes(v.size) ? v.size : "medium",
       bg: v && typeof v.bg === "boolean" ? v.bg : true,
+      hidden: !!(v && v.hidden),
     };
     applyDisplay();
   }
@@ -473,6 +480,13 @@ let generating = false;
     });
     const bgBtn = document.getElementById("musical-bg-btn");
     if (bgBtn) bgBtn.classList.toggle("active", displayPrefs.bg);
+    const hideBtn = document.getElementById("musical-hide-btn");
+    if (hideBtn) {
+      hideBtn.textContent = displayPrefs.hidden ? "Show" : "Hide";
+      hideBtn.title = displayPrefs.hidden
+        ? "Show the lyrics overlay"
+        : "Hide the lyrics overlay";
+    }
   }
 
   function setSize(key) {
@@ -486,6 +500,14 @@ let generating = false;
     displayPrefs.bg = !displayPrefs.bg;
     saveDisplayPrefs();
     applyDisplay();
+  }
+
+  function toggleHidden() {
+    displayPrefs.hidden = !displayPrefs.hidden;
+    saveDisplayPrefs();
+    applyDisplay();
+    if (displayPrefs.hidden) clearOverlay();
+    else forceOverlayRender();
   }
 
   // Apply delta to line i's field ("s" or "e"), propagating per nudgeMode:
@@ -693,10 +715,16 @@ let generating = false;
     }
   }
 
+  // Records the extension understands. The backend stamps "v" on every record
+  // it returns; a stored copy without it predates the current contract (e.g.
+  // whole-verse line grouping), so it is replaced by the backend's copy.
+  const CURRENT_RECORD_V = 2;
+
   async function loadFromCache(videoId) {
     const key = "musical:" + videoId;
     const bag = await api.storage.local.get(key);
     const rec = bag && bag[key] ? bag[key] : null;
+    let local = null;
     if (rec && Array.isArray(rec.lines)) {
       // Self-heal stale records: the backend now guarantees monotonic, non-empty
       // spans, but browser.storage.local is NOT versioned (per AGENTS.md), so a
@@ -706,8 +734,22 @@ let generating = false;
       if (sanitizeRecord(rec)) {
         await api.storage.local.set({ [key]: rec });
       }
+      if (rec.v >= CURRENT_RECORD_V) return rec;
+      local = rec; // pre-v2: keep as a fallback while we ask the backend
     }
-    return rec;
+    // No usable local copy: check the backend cache (read-only, costs nothing —
+    // this is NOT auto-processing). A hit is adopted and stored, so the pill
+    // shows ⚙ and the lyrics render without a click.
+    try {
+      const resp = await sendWithRetry({ type: "get", videoId }, 2);
+      if (resp && resp.ok && resp.rec && Array.isArray(resp.rec.lines)) {
+        await api.storage.local.set({ [key]: resp.rec });
+        return resp.rec;
+      }
+    } catch (e) {
+      // Backend down or unreachable: fall through to whatever we have.
+    }
+    return local;
   }
 
   // Repair a record's lines in place. Returns true if anything changed.
@@ -809,7 +851,8 @@ let generating = false;
   // next timeupdate (which can be up to ~250ms away and was the source of the
   // "subtitles generated but not shown the first time" flakiness).
   function renderLine(idx) {
-    if (!currentRecord || idx < 0 || idx >= currentRecord.lines.length) return;
+    if (!currentRecord || displayPrefs.hidden) return;
+    if (idx < 0 || idx >= currentRecord.lines.length) return;
     currentLineIdx = idx;
     const ln = currentRecord.lines[idx];
     const romanized = ln.romanized || "";

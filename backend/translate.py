@@ -5,7 +5,11 @@ import time
 import requests
 
 ZAI_URL = "https://api.z.ai/api/paas/v4/chat/completions"
-MODEL = "glm-4.6"
+MODEL = "glm-5.3-flash"
+
+# glm-5.3-flash always reasons (the API rejects thinking=disabled, error 1210);
+# "low" is the cheapest effort, which is all lyric translation needs.
+THINKING = {"type": "enabled", "reasoning": "low"}
 
 # Hard ceiling on the total input size sent to the LLM in one request, in
 # characters. A normal song sits well under this; exceeding it almost always
@@ -13,9 +17,9 @@ MODEL = "glm-4.6"
 # risk a large, accidental API spend.
 MAX_INPUT_CHARS = 20_000
 
-# GLM-4.6 can run long on big songs (it's a frontier model, not a fast one).
-# 300s headroom avoids the ReadTimeout we saw on long tracks; one retry on a
-# transient timeout/connection error covers Z.ai's occasional blips.
+# A reasoning model can still run long on big songs; 300s headroom avoids the
+# ReadTimeout we saw on long tracks. One retry on a transient timeout/
+# connection error covers Z.ai's occasional blips.
 ZAI_TIMEOUT_S = 300
 ZAI_MAX_ATTEMPTS = 2
 ZAI_RETRY_BACKOFF_S = 4
@@ -51,6 +55,9 @@ meaning.
 translation_direct to a bracketed romanization (e.g. "[oylum oy]"), give \
 romanized the sing-along form, and put an evocative equivalent in meaning.
 - Do not merge or split lines.
+- Each field must be a single short line, about as long as the input line \
+itself. Never a paragraph; never two sentences when the input line is one. \
+These lines are sung one at a time on screen.
 
 Return ONLY a JSON object of the form:
 {"lines": [{"i": <int>, "romanized": "..." or null, "translation_direct": "...", "meaning": "..."}]}
@@ -79,6 +86,7 @@ def translate_lines(items, lang_hint="auto"):
 
     payload = {
         "model": MODEL,
+        "thinking": THINKING,
         "messages": [
             {"role": "system", "content": SYSTEM},
             {

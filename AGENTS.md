@@ -142,7 +142,11 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   (e.g. "Je t'aime" → "zhuh tem"). Only English lines skip it (`romanized: null`).
 - **Explicit trigger only**: the extension generates subtitles when the user
   clicks the musical pill in YouTube's action bar. Do not add auto-processing
-  on page load.
+  on page load. Page load DOES make one read-only backend check
+  (GET /subtitles/{videoId}, via background.js) so an already-processed song
+  shows the ⚙ pill and renders its lyrics with no click — that is display of a
+  cached record, not processing: no yt-dlp download, no Whisper, no LLM call
+  happens without the click.
 - **The trigger is a native action-bar pill, not a floating button.**
   `injectActionBarButton` clones a real sibling action button (the last child
   of `#top-level-buttons-computed` / `#flexible-item-buttons`) and mutates its
@@ -160,6 +164,15 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   `align.py` re-pins their `start`/`end` to fresh word timestamps. This matters
   because Whisper transcribes sung Persian/Arabic poorly and often emits
   "موسیقی" (music) placeholders for instrumentals; we never want that text.
+- **Transcription-fallback cues are verse-length.** Grouping Whisper words on
+  pauses alone produced paragraph cues (one cached record had the ENTIRE song
+  in a single 106s cue — sung audio rarely pauses >= 1.5s mid-phrase).
+  `main.group_words_into_lines` therefore also caps every line at
+  `MAX_LINE_WORDS` (12) and `MAX_LINE_DUR_S` (8.0s); an over-cap line splits at
+  its most phrase-like internal gap (largest gap, nudged toward the middle so
+  evenly-sung runs split into even halves). The GLM prompt mirrors this: each
+  output field must be a single short line about the length of the input line,
+  never a paragraph.
 - **`/resync` is agentic-first, algorithmic-fallback ("agent proposes, code
   disposes").** When the `opencode` CLI is available, `/resync` gathers every
   timing source into an evidence bundle — fresh Whisper words, ALL of the
@@ -231,10 +244,19 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
   the user should click ♫ again after a schema change.
 - **The record stores its source `url`** so `/resync` can re-download the audio
   without the extension re-sending it.
+- **Records carry an API-stamped `v`.** `data_json` in SQLite holds ONLY the
+  lines array, so per-record markers can't persist there; instead every record
+  the API returns (`/process`, `/subtitles`, `/resync`) is stamped
+  `v = main.RECORD_VERSION` at the boundary (`_with_v`). The extension
+  (`CURRENT_RECORD_V`) treats a storage copy WITHOUT `v` as stale and replaces
+  it with the backend's copy on page load — that is how old paragraph-cue
+  records self-heal without touching browser devtools. Bump RECORD_VERSION
+  when a generation change should push fresh records into the extension.
 - Cache record shape (shared contract between backend and extension):
   ```json
   { "videoId": "...", "title": "...", "artist": "...", "lang": null,
     "source": "lrc" | "transcription", "url": "https://www.youtube.com/watch?v=...",
+    "v": 2,
     "lines": [ { "start": 12.5, "end": 16.0, "original": "...",
                  "romanized": "...", "translation_direct": "...", "meaning": "..." } ] }
   ```
@@ -330,5 +352,5 @@ Backend runtime errors (tracebacks) are written to `backend/musical.log` (gitign
 - Slice 2 (done): `transcribe.py` — Groq Whisper transcription fallback when no
   synced lyrics exist, plus `align.py` forced alignment + `/resync` endpoint
   for the "Re-sync from audio" button.
-- Later: styling polish, per-language translation prompts, a toggle to hide
-  the romanized or meaning lines.
+- Later: styling polish, per-language translation prompts, per-field display
+  toggles (a global hide-lyrics toggle already ships in the ⚙ panel).
